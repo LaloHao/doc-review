@@ -142,4 +142,15 @@ create table comment_edits (
 create index comment_edits_comment_idx on comment_edits (comment_id, id);
 `,
   },
+  {
+    // The diff of each version against the previous one, computed once.
+    name: "006_version_diffs",
+    sql: `
+create table version_diffs (
+  version_id integer primary key references versions(id) on delete cascade,
+  diff jsonb,
+  created_at timestamptz not null default now()
+);
+`,
+  },
 ];

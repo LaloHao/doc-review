@@ -451,6 +451,13 @@ describe("versions and changes", () => {
     const marco = diff.diff.chapters.find((c) => c.id === "02-marco-teorico")!;
     expect(marco.hunks).toEqual([]);
 
+    // Stored with the version, not recomputed.
+    const v2 = await s.repo.getVersion(2);
+    expect(await s.repo.storedDiff(v2!.id)).toMatchObject({ previous: 1 });
+    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"stored\"') where version_id = $1", [v2!.id]);
+    expect(((await (await director.get("/api/versions/2/diff")).json()) as { diff: { mode: string } }).diff.mode).toBe("stored");
+    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"chapters\"') where version_id = $1", [v2!.id]);
+
     const page = await director.get("/v/2/cambios");
     const text = await page.text();
     expect(text).toContain("Avance por capítulo");

@@ -44,7 +44,8 @@ export function renderComment(body: string): string {
       });
       h = h.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
       h = h.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s.,;:!?)])/g, "$1<em>$2</em>");
-      h = h.replace(/\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)]/g, (url) => `<a href="${url}" rel="noopener noreferrer nofollow" target="_blank">${url}</a>`);
+      // \u0000 marks a `code` placeholder: a URL must stop before it.
+      h = h.replace(/\bhttps?:\/\/[^\s<>"'\u0000]+[^\s<>"'.,;:!?)\u0000]/g, (url) => `<a href="${url}" rel="noopener noreferrer nofollow" target="_blank">${url}</a>`);
       h = h.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)] ?? "");
       return `<p>${h.replace(/\n/g, "<br>")}</p>`;
     })

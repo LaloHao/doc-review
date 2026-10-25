@@ -1,14 +1,12 @@
-// Server-side PDF validation and text extraction with pdf.js (pure JS, no canvas,
-// no fonts; pdf.js 6 no longer uses eval). An upload is accepted only if pdf.js can open every page.
+// Server-side PDF validation and text extraction. An upload is accepted only if
+// pdf.js can open every page. Parsing runs in a worker thread with its own heap
+// limit and a timeout (worker.mjs, core.mjs), so a hostile or huge PDF can't take
+// the server down or block it.
 
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
+import { joinTextItems } from "./core.mjs";
 
-const require = createRequire(import.meta.url);
-GlobalWorkerOptions.workerSrc = pathToFileURL(
-  require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs"),
-).href;
+export { joinTextItems };
 
 export class PdfError extends Error {}
 
@@ -20,66 +18,58 @@ export interface ExtractedPdf {
   pages: string[];
 }
 
+export interface ExtractOptions {
+  /** Give up after this long (default 90 s). */
+  timeoutMs?: number;
+  /** Old-generation heap of the worker (default 512 MB). */
+  maxHeapMb?: number;
+}
+
 export function looksLikePdf(data: Uint8Array): boolean {
-  // "%PDF-" within the first 1024 bytes (the spec allows leading garbage; we don't
-  // allow much of it).
-  const head = Buffer.from(data.subarray(0, 1024)).toString("latin1");
+  // "%PDF-" at the start (the spec allows leading garbage; we don't).
+  const head = Buffer.from(data.buffer, data.byteOffset, Math.min(data.length, 1024)).toString("latin1");
   return head.startsWith("%PDF-");
 }
 
-interface TextItemLike {
-  str?: string;
-  hasEOL?: boolean;
-}
+const WORKER_URL = new URL("./worker.mjs", import.meta.url);
 
-/** Joins pdf.js text items; undoes end-of-line hyphenation ("pala-\nbra" → "palabra"). */
-export function joinTextItems(items: TextItemLike[]): string {
-  let out = "";
-  for (const it of items) {
-    if (typeof it.str !== "string") continue;
-    out += it.str;
-    if (it.hasEOL) out += "\n";
-  }
-  return out
-    .replace(/(\p{Ll})-\n(\p{Ll})/gu, "$1$2")
-    .replace(/[ \t]*\n[ \t]*/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-}
+type WorkerReply =
+  | { ok: true; pageCount: number; pages: string[] }
+  | { ok: false; problem: boolean; message: string };
 
-export async function extractPdf(data: Uint8Array): Promise<ExtractedPdf> {
+export async function extractPdf(data: Uint8Array, opts: ExtractOptions = {}): Promise<ExtractedPdf> {
   if (!looksLikePdf(data)) throw new PdfError("El archivo no es un PDF.");
-  let doc;
-  const task = getDocument({
-    // pdf.js may transfer (detach) the buffer it is given: pass a copy.
-    data: new Uint8Array(data),
-    disableFontFace: true,
-    useSystemFonts: false,
-    stopAtErrors: true,
-    verbosity: 0,
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const worker = new Worker(WORKER_URL, {
+    resourceLimits: { maxOldGenerationSizeMb: opts.maxHeapMb ?? 512, maxYoungGenerationSizeMb: 32 },
+    stdout: false,
+    stderr: false,
   });
   try {
-    doc = await task.promise;
-  } catch (e) {
-    await task.destroy();
-    throw new PdfError(`pdf.js no pudo abrir el PDF: ${(e as Error).message}`);
-  }
-  try {
-    if (doc.numPages < 1 || doc.numPages > MAX_PAGES) {
-      throw new PdfError(`El PDF debe tener entre 1 y ${MAX_PAGES} páginas.`);
-    }
-    const pages: string[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const tc = await page.getTextContent();
-      pages.push(joinTextItems(tc.items as TextItemLike[]));
-      page.cleanup();
-    }
-    return { pageCount: doc.numPages, pages };
-  } catch (e) {
-    if (e instanceof PdfError) throw e;
-    throw new PdfError(`pdf.js no pudo leer el PDF: ${(e as Error).message}`);
+    const reply = await new Promise<WorkerReply>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new PdfError(`El PDF tardó demasiado en procesarse (más de ${Math.round(timeoutMs / 1000)} s).`)), timeoutMs);
+      worker.once("message", (m: WorkerReply) => {
+        clearTimeout(timer);
+        resolve(m);
+      });
+      worker.once("error", (e: Error & { code?: string }) => {
+        clearTimeout(timer);
+        reject(
+          e.code === "ERR_WORKER_OUT_OF_MEMORY"
+            ? new PdfError("El PDF necesita demasiada memoria para procesarse.")
+            : new Error(`PDF worker failed: ${e.message}`),
+        );
+      });
+      worker.once("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`PDF worker exited (${code})`));
+      });
+      // Structured clone: the worker gets its own copy (pdf.js detaches it).
+      worker.postMessage({ data, maxPages: MAX_PAGES });
+    });
+    if (!reply.ok) throw reply.problem ? new PdfError(reply.message) : new Error(`PDF worker: ${reply.message}`);
+    return { pageCount: reply.pageCount, pages: reply.pages };
   } finally {
-    await task.destroy();
+    await worker.terminate();
   }
 }

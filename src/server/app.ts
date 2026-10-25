@@ -194,7 +194,7 @@ export function createApp(deps: AppDeps) {
   const loginLimiter = new RateLimiter(10, 10 * 60_000);
   const bearerLimiter = new RateLimiter(30, 10 * 60_000); // failed bearer attempts
   const writeLimiter = new RateLimiter(60, 60_000);
-  const diffCache = new Map<number, VersionDiff | null>();
+  const diffsInFlight = new Map<number, Promise<VersionDiff | null>>();
   const routes: Route[] = [];
 
   const route = (method: string, pattern: string, handler: Handler) => {
@@ -270,20 +270,30 @@ export function createApp(deps: AppDeps) {
     return v;
   };
 
+  /**
+   * The diff against the previous version: computed once (right after
+   * publishing, or on first use for older versions) and stored with the version.
+   */
   const diffFor = async (v: Version): Promise<VersionDiff | null> => {
-    if (diffCache.has(v.id)) return diffCache.get(v.id)!;
-    const all = await repo.listVersions();
-    const prev = all.find((x) => x.number < v.number) ?? null;
-    let d: VersionDiff | null = null;
-    if (prev) {
-      d = diffVersions(
-        { number: prev.number, pages: await repo.pages(prev.id), avance: prev.avance, chapters: prev.chapter_pages },
-        { pages: await repo.pages(v.id), avance: v.avance, chapters: v.chapter_pages },
-      );
+    const stored = await repo.storedDiff(v.id);
+    if (stored !== undefined) return stored;
+    let p = diffsInFlight.get(v.id);
+    if (!p) {
+      p = (async () => {
+        const all = await repo.listVersions();
+        const prev = all.find((x) => x.number < v.number) ?? null;
+        const d = prev
+          ? diffVersions(
+              { number: prev.number, pages: await repo.pages(prev.id), avance: prev.avance, chapters: prev.chapter_pages },
+              { pages: await repo.pages(v.id), avance: v.avance, chapters: v.chapter_pages },
+            )
+          : null;
+        await repo.storeDiff(v.id, d);
+        return d;
+      })().finally(() => diffsInFlight.delete(v.id));
+      diffsInFlight.set(v.id, p);
     }
-    if (diffCache.size > 20) diffCache.clear();
-    diffCache.set(v.id, d);
-    return d;
+    return p;
   };
 
   /** A thread, if the viewer may see it (visibility setting applies to directors). */
@@ -589,13 +599,10 @@ export function createApp(deps: AppDeps) {
       chapterPages,
     });
     log(`version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`);
-    setImmediate(async () => {
-      try {
-        await notifier.versionPublished(v, await repo.listDirectors());
-      } catch (e) {
-        log(`notify error: ${(e as Error).message}`);
-      }
+    later(async () => {
+      await diffFor(v);
     });
+    later(async () => notifier.versionPublished(v, await repo.listDirectors()));
     json(c.res, 201, { version: versionJson(v), url: `${config.publicUrl}/v/${v.number}` });
   });
 

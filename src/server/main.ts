@@ -123,7 +123,10 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
     log,
   });
   const app = createApp({ config, repo, store, notifier, log });
-  const server = createServer({ requestTimeout: 120_000, headersTimeout: 30_000 }, (req, res) => {
+  // Long enough to upload the largest PDF at ~100 KB/s (50 MB: about 8.5 min);
+  // headers must still arrive within 30 s.
+  const requestTimeout = Math.max(120_000, Math.ceil(config.maxPdfBytes / (100 * 1024)) * 1000);
+  const server = createServer({ requestTimeout, headersTimeout: 30_000 }, (req, res) => {
     void app.handle(req, res);
   });
   await new Promise<void>((ok) => server.listen(config.port, config.host, ok));

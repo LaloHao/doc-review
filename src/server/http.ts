@@ -52,7 +52,8 @@ export async function readMultipart(req: IncomingMessage, limit: number): Promis
   if (!/^multipart\/form-data\b/i.test(type)) throw new HttpError(415, "Se esperaba multipart/form-data.");
   const body = await readBody(req, limit);
   try {
-    return await new Request("http://local/", { method: "POST", headers: { "content-type": type }, body: new Uint8Array(body) }).formData();
+    // The Buffer is handed over as is (no extra copy of a 50 MB upload).
+    return await new Request("http://local/", { method: "POST", headers: { "content-type": type }, body: body as Uint8Array<ArrayBuffer> }).formData();
   } catch {
     throw new HttpError(400, "Formulario multipart no válido.");
   }

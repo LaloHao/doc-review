@@ -2,7 +2,7 @@
 
 import type { Avance } from "./avance.js";
 import type { Db, Queryable } from "./db/db.js";
-import { chapterOfPage, type ChapterPages } from "./diff.js";
+import { chapterOfPage, type ChapterPages, type VersionDiff } from "./diff.js";
 import { newSecret, sha256Hex } from "./server/crypto.js";
 import { renderComment } from "./text.js";
 
@@ -336,6 +336,19 @@ export class Repo {
   async latestVersion(): Promise<Version | null> {
     const [v] = await this.db.query<Version>("select * from versions order by number desc limit 1");
     return v ?? null;
+  }
+
+  /** The stored diff of a version: undefined if not computed yet (null = first version). */
+  async storedDiff(versionId: number): Promise<VersionDiff | null | undefined> {
+    const [r] = await this.db.query<{ diff: VersionDiff | null }>("select diff from version_diffs where version_id = $1", [versionId]);
+    return r ? r.diff : undefined;
+  }
+
+  async storeDiff(versionId: number, diff: VersionDiff | null): Promise<void> {
+    await this.db.query("insert into version_diffs (version_id, diff) values ($1, $2::jsonb) on conflict do nothing", [
+      versionId,
+      JSON.stringify(diff),
+    ]);
   }
 
   async pages(versionId: number): Promise<string[]> {

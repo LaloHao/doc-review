@@ -11,7 +11,8 @@
     "rootDir": "src",
     "declaration": false,
     "types": ["node"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowJs": true
   },
   "include": ["src"]
 }

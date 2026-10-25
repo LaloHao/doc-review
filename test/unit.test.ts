@@ -6,7 +6,7 @@ import { avanceFromOrg, countWords, orgProse, validateAvance } from "../src/avan
 import { loadConfig, parseS3Url } from "../src/config.js";
 import { diffSeq, hunks, locateChapters, sentences } from "../src/diff.js";
 import { Notifier } from "../src/notify/notify.js";
-import { extractPdf, joinTextItems, looksLikePdf } from "../src/pdf/extract.js";
+import { extractPdf, joinTextItems, looksLikePdf, PdfError } from "../src/pdf/extract.js";
 import type { ThreadOut } from "../src/repo.js";
 import { safeEqual } from "../src/server/crypto.js";
 import { ipBucket, RateLimiter } from "../src/server/ratelimit.js";
@@ -86,6 +86,11 @@ describe("output encoding", () => {
     expect(h).toContain("&lt;img src=x onerror=alert(1)&gt;");
     expect(h).not.toMatch(/<img|<b>/);
     expect(renderComment("javascript:alert(1)")).not.toContain("<a");
+    // A URL right before `code` must not swallow its placeholder.
+    const glued = renderComment("ver https://example.com/a`x\"y`");
+    expect(glued).toContain('<a href="https://example.com/a" rel=');
+    expect(glued).toContain("<code>x&quot;y</code>");
+    expect(glued).not.toMatch(/href="[^"]*<code>/);
     expect(renderComment('https://x.com/"onmouseover="alert(1)')).not.toContain('"onmouseover');
   });
 });
@@ -156,6 +161,11 @@ describe("pdf", () => {
   });
   it("joins text items and undoes hyphenation", () => {
     expect(joinTextItems([{ str: "anonimiza-", hasEOL: true }, { str: "ción de  datos" }])).toBe("generación trazable de recomendaciones de rutas");
+  });
+  it("parses in a worker with a time limit and a heap limit", async () => {
+    await expect(extractPdf(sampleThesis(), { timeoutMs: 1 })).rejects.toThrow(/tardó demasiado/);
+    await expect(extractPdf(sampleThesis(), { maxHeapMb: 4 })).rejects.toThrow(/demasiada memoria/);
+    await expect(extractPdf(new TextEncoder().encode("%PDF-1.4 basura"))).rejects.toBeInstanceOf(PdfError);
   });
   it("extracts text from a PDF", async () => {
     const { pageCount, pages } = await extractPdf(sampleThesis());
