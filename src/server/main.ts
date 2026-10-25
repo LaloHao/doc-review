@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { describeConfig, type Config } from "../config.js";
 import { migrate, openDb, type Db } from "../db/db.js";
 import { Notifier, smtpMailer, telegramClient, type Mailer, type Telegram } from "../notify/notify.js";
-import { Repo } from "../repo.js";
+import { ownerSessionFingerprint, Repo } from "../repo.js";
 import { openStore, type BlobStore } from "../storage.js";
 import { createApp } from "./app.js";
 
@@ -69,7 +69,9 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
       if (applied.length) log(`migrations applied: ${applied.join(", ")}`);
     }
   }
-  const repo = new Repo(db, config.ownerName);
+  const repo = new Repo(db, config.ownerName, ownerSessionFingerprint(config.ownerTokenSha256));
+  const stale = await repo.purgeStaleOwnerSessions();
+  if (stale) log(`owner token changed: ${stale} owner session(s) closed`);
   const store = opts.store ?? openStore(config.storage);
   const telegram = opts.telegram !== undefined ? opts.telegram : config.telegram ? telegramClient(config.telegram) : null;
   const mailer = opts.mailer !== undefined ? opts.mailer : config.smtp ? await smtpMailer(config.smtp) : null;

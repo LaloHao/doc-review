@@ -26,6 +26,7 @@ Autor (usa ~/.config/revision-tesis/config.json: {"url", "token"}, modo 0600):
   revision-tesis directors add "Nombre" [--role R] [--email E] [--notify] [--send-link]
   revision-tesis directors rotate ID [--send-link]
   revision-tesis directors revoke ID
+  revision-tesis sessions close-all [--directors]    cierra tus sesiones web (y las de los directores)
 `;
 
 async function main(argv: string[]): Promise<number> {
@@ -147,6 +148,17 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       throw new Error(`subcomando desconocido: directors ${sub}`);
+    }
+
+    case "sessions": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { directors: { type: "boolean" } } });
+      if (positionals[0] !== "close-all") throw new Error("uso: revision-tesis sessions close-all [--directors]");
+      const client = new Client(await loadClientConfig());
+      const r = await client.json<{ closed: { owner: number; directors: number } }>("POST", "/api/sessions/close-all", {
+        directors: values.directors === true,
+      });
+      console.log(`sesiones cerradas: ${r.closed.owner} tuyas, ${r.closed.directors} de directores`);
+      return 0;
     }
 
     default:

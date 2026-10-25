@@ -707,6 +707,15 @@ export function createApp(deps: AppDeps) {
     json(c.res, 200, { director: directorJson(d) });
   });
 
+  route("POST", "/api/sessions/close-all", async (c) => {
+    requireOwner(c);
+    checkCsrf(c);
+    const b = c.req.headers["content-type"]?.startsWith("application/json") ? await readJson(c.req) : {};
+    const closed = await repo.closeAllSessions(b.directors === true);
+    log(`sessions closed by the owner: ${closed.owner} owner, ${closed.directors} director`);
+    json(c.res, 200, { closed }, c.bearer ? {} : { "set-cookie": cookie(SESSION_COOKIE, "", 0) });
+  });
+
   route("GET", "/api/settings", async (c) => {
     requireOwner(c);
     json(c.res, 200, { settings: { comments_visibility: await repo.visibility() }, notifications: notifier.enabled });

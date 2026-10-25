@@ -87,6 +87,19 @@ document.getElementById("settings-form")?.addEventListener("submit", async (e) =
   }
 });
 
+document.getElementById("sessions-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const directors = e.target.elements.directors.checked;
+  const who = directors ? "tus sesiones y las de todos los directores" : "todas tus sesiones del navegador";
+  if (!confirm(`¿Cerrar ${who}? Tendrás que entrar de nuevo con tu token.`)) return;
+  try {
+    await api("POST", "/api/sessions/close-all", { directors });
+    location.href = "/entrar";
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
 document.getElementById("upload-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target;

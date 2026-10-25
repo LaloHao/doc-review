@@ -91,10 +91,17 @@ const DIRECTOR_COLS =
 const iso = (d: Date | string | null | undefined): string | null =>
   d === null || d === undefined ? null : new Date(d).toISOString();
 
+/** Fingerprint of the owner token hash, stored in owner sessions ("" = no owner access). */
+export function ownerSessionFingerprint(ownerTokenSha256: string): string {
+  return ownerTokenSha256 ? sha256Hex(`owner-session:${ownerTokenSha256}`).slice(0, 32) : "";
+}
+
 export class Repo {
   constructor(
     readonly db: Db,
     private readonly ownerName: string,
+    /** `ownerSessionFingerprint` of the current owner token. */
+    private readonly ownerFp = "",
   ) {}
 
   // --- directors ---
@@ -180,9 +187,9 @@ export class Repo {
     const id = newSecret(32);
     const csrf = newSecret(32);
     await this.db.query(
-      `insert into sessions (id_hash, kind, director_id, csrf_token, expires_at)
-       values ($1, $2, $3, $4, $5)`,
-      [sha256Hex(id), kind, directorId, csrf, new Date(Date.now() + ttlMs)],
+      `insert into sessions (id_hash, kind, director_id, csrf_token, expires_at, owner_fp)
+       values ($1, $2, $3, $4, $5, $6)`,
+      [sha256Hex(id), kind, directorId, csrf, new Date(Date.now() + ttlMs), kind === "owner" ? this.ownerFp : null],
     );
     if (directorId !== null) {
       await this.db.query("update directors set last_seen_at = now() where id = $1", [directorId]);
@@ -199,8 +206,14 @@ export class Repo {
       csrf_token: string;
       expires_at: Date;
       last_seen_at: Date;
-    }>("select kind, director_id, csrf_token, expires_at, last_seen_at from sessions where id_hash = $1", [idHash]);
+      owner_fp: string | null;
+    }>("select kind, director_id, csrf_token, expires_at, last_seen_at, owner_fp from sessions where id_hash = $1", [idHash]);
     if (!s || new Date(s.expires_at).getTime() <= Date.now()) return null;
+    if (s.kind === "owner" && (!this.ownerFp || s.owner_fp !== this.ownerFp)) {
+      // Opened with an owner token that is no longer the current one.
+      await this.deleteSession(idHash);
+      return null;
+    }
     let director: Director | null = null;
     if (s.kind === "director") {
       director = s.director_id === null ? null : await this.getDirector(s.director_id);
@@ -223,6 +236,22 @@ export class Repo {
 
   async purgeExpiredSessions(): Promise<void> {
     await this.db.query("delete from sessions where expires_at < now()");
+  }
+
+  /** Deletes owner sessions opened with another owner token; returns how many. */
+  async purgeStaleOwnerSessions(): Promise<number> {
+    const rows = await this.db.query(
+      "delete from sessions where kind = 'owner' and owner_fp is distinct from $1 returning id_hash",
+      [this.ownerFp],
+    );
+    return rows.length;
+  }
+
+  /** "Cerrar todas las sesiones": every owner web session and, optionally, every director session. */
+  async closeAllSessions(directorsToo: boolean): Promise<{ owner: number; directors: number }> {
+    const owner = await this.db.query("delete from sessions where kind = 'owner' returning id_hash");
+    const directors = directorsToo ? await this.db.query("delete from sessions where kind = 'director' returning id_hash") : [];
+    return { owner: owner.length, directors: directors.length };
   }
 
   // --- settings ---

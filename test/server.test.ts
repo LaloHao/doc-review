@@ -566,3 +566,69 @@ describe("untrusted text", () => {
     expect(thread.comments[0]!.body).toBe("ok [2J]0;x fin\nlínea 2");
   });
 });
+
+describe("owner sessions", () => {
+  it("stop working when the owner token changes", async () => {
+    const { Repo, ownerSessionFingerprint } = await import("../src/repo.js");
+    const { sha256Hex } = await import("../src/server/crypto.js");
+    const before = new Repo(s.repo.db, "x", ownerSessionFingerprint(sha256Hex(OWNER_TOKEN)));
+    const after = new Repo(s.repo.db, "x", ownerSessionFingerprint(sha256Hex("rt_owner_rotated")));
+    const sess = await before.createSession("owner", null, 3600_000);
+    expect(await before.getSession(sess.id, () => 3600_000)).not.toBeNull();
+    expect(await after.getSession(sess.id, () => 3600_000)).toBeNull();
+    // ...and the row is gone, even for the old token.
+    expect(await before.getSession(sess.id, () => 3600_000)).toBeNull();
+    const other = await before.createSession("owner", null, 3600_000);
+    expect(await after.purgeStaleOwnerSessions()).toBeGreaterThanOrEqual(1);
+    expect(await before.getSession(other.id, () => 3600_000)).toBeNull();
+  });
+
+  it("«Cerrar todas las sesiones» closes the owner's web sessions and, if asked, the directors'", async () => {
+    const fresh = await startTestServer();
+    try {
+      const login = async () => {
+        const f = await fetch(fresh.url + "/entrar");
+        const pre = f.headers.getSetCookie()[0]!.split(";")[0]!;
+        const ok = await fetch(fresh.url + "/entrar", {
+          method: "POST",
+          redirect: "manual",
+          headers: { cookie: pre, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ _csrf: pre.split("=")[1]!, token: OWNER_TOKEN }).toString(),
+        });
+        return ok.headers.getSetCookie().find((c) => c.startsWith("__Host-rt_session="))!.split(";")[0]!;
+      };
+      const bearer = { authorization: `Bearer ${OWNER_TOKEN}`, "content-type": "application/json" };
+      const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: bearer, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
+      const dCookie = (await fetch(fresh.url + new URL(d.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
+      const me = (cookie: string) => fetch(fresh.url + "/api/me", { headers: { cookie } }).then((r) => r.status);
+      const web1 = await login();
+      const web2 = await login();
+      let r = await fetch(fresh.url + "/api/sessions/close-all", { method: "POST", headers: bearer, body: JSON.stringify({}) });
+      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 2, directors: 0 });
+      expect([await me(web1), await me(web2), await me(dCookie)]).toEqual([401, 401, 200]);
+      // From the browser (cookie + CSRF), directors too; the response clears the cookie.
+      const web3 = await login();
+      const csrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie: web3 } })).json()) as { csrf: string }).csrf;
+      r = await fetch(fresh.url + "/api/sessions/close-all", {
+        method: "POST",
+        headers: { cookie: web3, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({ directors: true }),
+      });
+      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 1, directors: 1 });
+      expect(r.headers.getSetCookie()[0]).toMatch(/^__Host-rt_session=; .*Max-Age=0/);
+      expect([await me(web3), await me(dCookie)]).toEqual([401, 401]);
+      // Directors can't do it.
+      const d2 = (await (await fetch(fresh.url + `/api/directors/1/rotate`, { method: "POST", headers: bearer, body: "{}" })).json()) as { link: string };
+      const d2Cookie = (await fetch(fresh.url + new URL(d2.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
+      const dcsrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie: d2Cookie } })).json()) as { csrf: string }).csrf;
+      r = await fetch(fresh.url + "/api/sessions/close-all", {
+        method: "POST",
+        headers: { cookie: d2Cookie, origin: ORIGIN, "x-csrf-token": dcsrf, "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(r.status).toBe(403);
+    } finally {
+      await fresh.stop();
+    }
+  });
+});

@@ -105,4 +105,12 @@ alter table threads add column resolved_by_kind text check (resolved_by_kind in 
 alter table threads add column resolved_by_director_id integer references directors(id);
 `,
   },
+  {
+    // Owner web sessions remember which owner token they were opened with: when
+    // OWNER_TOKEN_SHA256 changes (the token was rotated), they stop working.
+    name: "003_owner_session_fingerprint",
+    sql: `
+alter table sessions add column owner_fp text;
+`,
+  },
 ];

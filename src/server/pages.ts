@@ -312,6 +312,12 @@ export function ownerDashboard(
           <li>Correo a directores: ${ch.directorEmail ? "disponible (solo a quienes tengan correo y avisos activados)" : "desactivado (SMTP_*)"}</li>
           <li>Resumen diario: ${ch.digest ? esc(ch.digest) : "desactivado (DIGEST_HOUR)"}</li>
         </ul>
+        <h3>Sesiones</h3>
+        <form id="sessions-form" class="stack">
+          <p class="muted">Cierra tus sesiones del navegador (en todos los equipos; el token de la CLI y Emacs sigue sirviendo). Úsalo si perdiste un equipo o crees que alguien entró con tu sesión. Cambiar el token de autor también las cierra.</p>
+          <label class="check"><input type="checkbox" name="directors"> También las de todos los directores (tendrán que abrir de nuevo su enlace personal)</label>
+          <button type="submit" class="danger">Cerrar todas las sesiones</button>
+        </form>
       </section>
     </main>`,
   );
