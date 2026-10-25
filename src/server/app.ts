@@ -182,14 +182,20 @@ export function createApp(deps: AppDeps) {
   };
   const whoName = (s: Session) => (s.kind === "owner" ? config.ownerName : s.director!.name);
 
+  /**
+   * Same-origin check. Fetch requests carry the real Origin. HTML form posts carry
+   * `Origin: null` because of `Referrer-Policy: no-referrer`; for those (and for
+   * clients without Origin) Sec-Fetch-Site must say same-origin.
+   */
+  const sameOrigin = (c: Ctx) => {
+    const origin = c.req.headers.origin;
+    if (origin !== undefined && origin !== "null") return origin === config.origin;
+    return c.req.headers["sec-fetch-site"] === "same-origin";
+  };
+
   const checkCsrf = (c: Ctx, formToken?: string) => {
     if (c.bearer || ["GET", "HEAD"].includes(c.req.method ?? "")) return;
-    const origin = c.req.headers.origin;
-    const site = c.req.headers["sec-fetch-site"];
-    if (origin !== undefined ? origin !== config.origin : site !== undefined && site !== "same-origin") {
-      throw new HttpError(403, "Origen no permitido.");
-    }
-    if (origin === undefined && site === undefined) throw new HttpError(403, "Origen no permitido.");
+    if (!sameOrigin(c)) throw new HttpError(403, "Origen no permitido.");
     const token = (c.req.headers["x-csrf-token"] as string | undefined) ?? formToken ?? "";
     if (!c.session || !safeEqual(token, c.session.csrf)) throw new HttpError(403, "Token CSRF no válido.");
   };
@@ -271,8 +277,9 @@ export function createApp(deps: AppDeps) {
   route("GET", "/static/(.+)", async (c) => serveFile(c, PUBLIC_DIR, c.params[0]!, 300));
 
   const VENDOR: Record<string, string> = {
-    "pdf.mjs": "build/pdf.min.mjs",
-    "pdf.worker.mjs": "build/pdf.worker.min.mjs",
+    // The legacy build carries polyfills: directors may have older browsers.
+    "pdf.mjs": "legacy/build/pdf.min.mjs",
+    "pdf.worker.mjs": "legacy/build/pdf.worker.min.mjs",
   };
   route("GET", "/vendor/pdfjs/(.+)", async (c) => {
     const rel = c.params[0]!;
@@ -280,6 +287,8 @@ export function createApp(deps: AppDeps) {
     if (!mapped) throw new HttpError(404, "No encontrado.");
     await serveFile(c, PDFJS_DIR, mapped, 86400);
   });
+
+  route("GET", "/favicon.ico", async (c) => redirect(c.res, "/static/favicon.svg"));
 
   route("GET", "/", async (c) => {
     if (!c.session) return html(c.res, 200, pages.landingPage());
@@ -334,7 +343,7 @@ export function createApp(deps: AppDeps) {
 
   route("POST", "/entrar", async (c) => {
     limited(loginLimiter, c.ip);
-    if (c.req.headers.origin !== config.origin) throw new HttpError(403, "Origen no permitido.");
+    if (!sameOrigin(c)) throw new HttpError(403, "Origen no permitido.");
     const form = await readForm(c.req);
     const pre = parseCookies(c.req.headers.cookie).get(PRE_COOKIE) ?? "";
     if (!pre || !safeEqual(form.get("_csrf") ?? "", pre)) throw new HttpError(403, "Formulario caducado. Vuelva a cargar la página.");

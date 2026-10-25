@@ -170,9 +170,18 @@ export function hunks(ops: DiffOp[], context = 1, maxHunks = 40): DiffOp[][] {
   return out.slice(0, maxHunks);
 }
 
+/** Drops a page number (arabic or roman) on the first or last line of a page. */
+export function stripPageNumber(page: string): string {
+  const lines = page.split("\n");
+  const isNum = (l: string | undefined) => l !== undefined && /^\s*([0-9]{1,4}|[ivxlc]{1,7})\s*$/i.test(l);
+  if (isNum(lines[lines.length - 1])) lines.pop();
+  if (isNum(lines[0])) lines.shift();
+  return lines.join("\n");
+}
+
 function textOfRange(pages: string[], from: number | null, to: number | null): string {
   if (from === null) return "";
-  return pages.slice(from - 1, to === null ? undefined : to - 1).join("\n");
+  return pages.slice(from - 1, to === null ? undefined : to - 1).map(stripPageNumber).join("\n");
 }
 
 function chapterTexts(pages: string[], chapters: ChapterPages[]): Map<string, string> {
@@ -223,7 +232,7 @@ export function diffVersions(
   });
 
   if (!located) {
-    const d = diffText(prev.pages.join("\n"), next.pages.join("\n"));
+    const d = diffText(prev.pages.map(stripPageNumber).join("\n"), next.pages.map(stripPageNumber).join("\n"));
     chapters.push({ id: null, title: "Documento completo", words_before: null, words_after: null, words_delta: null, ...d });
     return { previous: prev.number, mode: "document", chapters };
   }

@@ -51,6 +51,7 @@ form.inline, .inline { display: inline-flex; align-items: center; gap: 0.4rem; }
 .stack { display: flex; flex-direction: column; gap: 0.8rem; max-width: 40rem; }
 .stack label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.95rem; }
 .stack label.check { flex-direction: row; align-items: center; gap: 0.5rem; }
+.stack > button, .stack > .row { align-self: flex-start; }
 .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 1rem; }
 fieldset label { display: flex; gap: 0.5rem; align-items: center; }

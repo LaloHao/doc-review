@@ -52,6 +52,7 @@ export function page(l: Layout, body: string): string {
 ${l.csrf ? `<meta name="csrf-token" content="${esc(l.csrf)}">` : ""}
 <title>${esc(l.title)}</title>
 <link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 ${(l.scripts ?? []).map((s) => `<script type="module" src="${esc(s)}"></script>`).join("\n")}
 </head>
 <body class="${esc(l.bodyClass ?? "")}"${data}>

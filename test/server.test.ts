@@ -416,3 +416,25 @@ describe("revocation and rotation", () => {
     expect(s.logs.join("\n")).not.toContain(r.link.split("/").pop()!);
   });
 });
+
+describe("HTML form posts with Referrer-Policy: no-referrer", () => {
+  it("accept Origin: null only with Sec-Fetch-Site: same-origin", async () => {
+    // A fresh server: the login limiter of the shared one is exhausted by now.
+    const fresh = await startTestServer();
+    try {
+      const f = await fetch(fresh.url + "/entrar");
+      const pre = f.headers.getSetCookie()[0]!.split(";")[0]!;
+      const post = (site: string) =>
+        fetch(fresh.url + "/entrar", {
+          method: "POST",
+          redirect: "manual",
+          headers: { cookie: pre, origin: "null", "sec-fetch-site": site, "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ _csrf: pre.split("=")[1]!, token: OWNER_TOKEN }).toString(),
+        });
+      expect((await post("cross-site")).status).toBe(403);
+      expect((await post("same-origin")).status).toBe(303);
+    } finally {
+      await fresh.stop();
+    }
+  });
+});

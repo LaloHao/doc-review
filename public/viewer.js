@@ -33,7 +33,7 @@ let observer = null;
 
 function fitScale() {
   const w = pagesEl.clientWidth - 32;
-  return Math.max(0.5, Math.min(2.5, w / baseWidth));
+  return Math.max(0.5, Math.min(1.5, w / baseWidth));
 }
 
 function layout() {
@@ -325,7 +325,7 @@ async function mutate(fn) {
 }
 
 function threadNode(t) {
-  const reply = el("textarea", { rows: 2, maxlength: 10000, placeholder: "Responder…", "aria-label": "Respuesta" });
+  const reply = el("textarea", { rows: 1, maxlength: 10000, placeholder: "Responder…", "aria-label": "Respuesta" });
   const replyForm = el("form", { class: "reply" }, reply, el("button", { type: "submit", text: "Responder" }));
   replyForm.addEventListener("submit", async (e) => {
     e.preventDefault();
