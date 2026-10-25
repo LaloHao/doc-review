@@ -1,0 +1,491 @@
+// Data access. All SQL lives here; handlers get plain objects back.
+
+import type { Avance } from "./avance.js";
+import type { Db, Queryable } from "./db/db.js";
+import { chapterOfPage, type ChapterPages } from "./diff.js";
+import { newSecret, sha256Hex } from "./server/crypto.js";
+import { renderComment } from "./text.js";
+
+export type AuthorKind = "owner" | "director";
+
+export interface Director {
+  id: number;
+  name: string;
+  role: string;
+  email: string | null;
+  notify_versions: boolean;
+  created_at: Date;
+  rotated_at: Date | null;
+  revoked_at: Date | null;
+  last_seen_at: Date | null;
+}
+
+export interface Session {
+  kind: AuthorKind;
+  director: Director | null;
+  csrf: string;
+  idHash: string;
+}
+
+export interface Version {
+  id: number;
+  number: number;
+  title: string;
+  note: string;
+  pdf_key: string;
+  pdf_sha256: string;
+  pdf_size: number;
+  page_count: number;
+  avance: Avance;
+  chapter_pages: ChapterPages[];
+  created_at: Date;
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Viewer {
+  kind: AuthorKind;
+  directorId: number | null;
+}
+
+export interface CommentOut {
+  id: number;
+  author: { kind: AuthorKind; name: string; director_id: number | null };
+  body: string | null;
+  body_html: string;
+  created_at: string;
+  edited_at: string | null;
+  deleted: boolean;
+  mine: boolean;
+}
+
+export interface ThreadOut {
+  id: number;
+  version: number;
+  page: number;
+  anchor: "text" | "point";
+  quote: string;
+  rects: Rect[];
+  status: "open" | "resolved";
+  resolved_at: string | null;
+  resolved_by: string | null;
+  chapter: { id: string; title: string } | null;
+  author: { kind: AuthorKind; name: string; director_id: number | null };
+  created_at: string;
+  updated_at: string;
+  comments: CommentOut[];
+}
+
+export type Visibility = "all" | "own";
+
+const DIRECTOR_COLS =
+  "id, name, role, email, notify_versions, created_at, rotated_at, revoked_at, last_seen_at";
+
+const iso = (d: Date | string | null | undefined): string | null =>
+  d === null || d === undefined ? null : new Date(d).toISOString();
+
+export class Repo {
+  constructor(
+    readonly db: Db,
+    private readonly ownerName: string,
+  ) {}
+
+  // --- directors ---
+
+  async createDirector(input: {
+    name: string;
+    role: string;
+    email: string | null;
+    notify_versions: boolean;
+  }): Promise<{ director: Director; secret: string }> {
+    const secret = newSecret(32);
+    const [director] = await this.db.query<Director>(
+      `insert into directors (name, role, email, notify_versions, token_hash)
+       values ($1, $2, $3, $4, $5) returning ${DIRECTOR_COLS}`,
+      [input.name, input.role, input.email, input.notify_versions, sha256Hex(secret)],
+    );
+    return { director: director!, secret };
+  }
+
+  listDirectors(): Promise<Director[]> {
+    return this.db.query<Director>(`select ${DIRECTOR_COLS} from directors order by revoked_at nulls first, id`);
+  }
+
+  async getDirector(id: number): Promise<Director | null> {
+    const [d] = await this.db.query<Director>(`select ${DIRECTOR_COLS} from directors where id = $1`, [id]);
+    return d ?? null;
+  }
+
+  async updateDirector(
+    id: number,
+    patch: Partial<Pick<Director, "name" | "role" | "email" | "notify_versions">>,
+  ): Promise<Director | null> {
+    const cur = await this.getDirector(id);
+    if (!cur) return null;
+    const next = { ...cur, ...patch };
+    const [d] = await this.db.query<Director>(
+      `update directors set name = $2, role = $3, email = $4, notify_versions = $5
+       where id = $1 returning ${DIRECTOR_COLS}`,
+      [id, next.name, next.role, next.email, next.notify_versions],
+    );
+    return d ?? null;
+  }
+
+  /** New secret for the link; the old link and its sessions stop working. */
+  async rotateDirector(id: number): Promise<{ director: Director; secret: string } | null> {
+    const secret = newSecret(32);
+    return this.db.tx(async (q) => {
+      const [d] = await q.query<Director>(
+        `update directors set token_hash = $2, rotated_at = now(), revoked_at = null
+         where id = $1 returning ${DIRECTOR_COLS}`,
+        [id, sha256Hex(secret)],
+      );
+      if (!d) return null;
+      await q.query("delete from sessions where director_id = $1", [id]);
+      return { director: d, secret };
+    });
+  }
+
+  async revokeDirector(id: number): Promise<Director | null> {
+    return this.db.tx(async (q) => {
+      const [d] = await q.query<Director>(
+        `update directors set revoked_at = coalesce(revoked_at, now()) where id = $1 returning ${DIRECTOR_COLS}`,
+        [id],
+      );
+      await q.query("delete from sessions where director_id = $1", [id]);
+      return d ?? null;
+    });
+  }
+
+  /** Looks a link secret up by its hash (an indexed lookup; the hash is not secret-dependent timing). */
+  async directorByLink(secret: string): Promise<Director | null> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
+    const [d] = await this.db.query<Director>(
+      `select ${DIRECTOR_COLS} from directors where token_hash = $1 and revoked_at is null`,
+      [sha256Hex(secret)],
+    );
+    return d ?? null;
+  }
+
+  // --- sessions ---
+
+  async createSession(kind: AuthorKind, directorId: number | null, ttlMs: number): Promise<{ id: string; csrf: string }> {
+    const id = newSecret(32);
+    const csrf = newSecret(32);
+    await this.db.query(
+      `insert into sessions (id_hash, kind, director_id, csrf_token, expires_at)
+       values ($1, $2, $3, $4, $5)`,
+      [sha256Hex(id), kind, directorId, csrf, new Date(Date.now() + ttlMs)],
+    );
+    if (directorId !== null) {
+      await this.db.query("update directors set last_seen_at = now() where id = $1", [directorId]);
+    }
+    return { id, csrf };
+  }
+
+  async getSession(id: string, slideFor: (kind: AuthorKind) => number): Promise<Session | null> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(id)) return null;
+    const idHash = sha256Hex(id);
+    const [s] = await this.db.query<{
+      kind: AuthorKind;
+      director_id: number | null;
+      csrf_token: string;
+      expires_at: Date;
+      last_seen_at: Date;
+    }>("select kind, director_id, csrf_token, expires_at, last_seen_at from sessions where id_hash = $1", [idHash]);
+    if (!s || new Date(s.expires_at).getTime() <= Date.now()) return null;
+    let director: Director | null = null;
+    if (s.kind === "director") {
+      director = s.director_id === null ? null : await this.getDirector(s.director_id);
+      if (!director || director.revoked_at) return null;
+    }
+    // Sliding expiry, written at most once an hour.
+    if (Date.now() - new Date(s.last_seen_at).getTime() > 3600_000) {
+      await this.db.query("update sessions set last_seen_at = now(), expires_at = $2 where id_hash = $1", [
+        idHash,
+        new Date(Date.now() + slideFor(s.kind)),
+      ]);
+      if (director) await this.db.query("update directors set last_seen_at = now() where id = $1", [director.id]);
+    }
+    return { kind: s.kind, director, csrf: s.csrf_token, idHash };
+  }
+
+  async deleteSession(idHash: string): Promise<void> {
+    await this.db.query("delete from sessions where id_hash = $1", [idHash]);
+  }
+
+  async purgeExpiredSessions(): Promise<void> {
+    await this.db.query("delete from sessions where expires_at < now()");
+  }
+
+  // --- settings ---
+
+  async getSetting<T>(key: string, fallback: T): Promise<T> {
+    const [r] = await this.db.query<{ value: T }>("select value from settings where key = $1", [key]);
+    return r ? r.value : fallback;
+  }
+
+  async setSetting(key: string, value: unknown): Promise<void> {
+    await this.db.query(
+      `insert into settings (key, value) values ($1, $2::jsonb)
+       on conflict (key) do update set value = excluded.value`,
+      [key, JSON.stringify(value)],
+    );
+  }
+
+  visibility(): Promise<Visibility> {
+    return this.getSetting<Visibility>("comments_visibility", "all");
+  }
+
+  // --- versions ---
+
+  async createVersion(input: {
+    title: string;
+    note: string;
+    pdfKey: (n: number) => string;
+    pdfSha256: string;
+    pdfSize: number;
+    pages: string[];
+    avance: Avance;
+    chapterPages: ChapterPages[];
+  }): Promise<Version> {
+    return this.db.tx(async (q) => {
+      const [{ n } = { n: 1 }] = await q.query<{ n: number }>("select coalesce(max(number), 0) + 1 as n from versions");
+      const [v] = await q.query<Version>(
+        `insert into versions (number, title, note, pdf_key, pdf_sha256, pdf_size, page_count, avance, chapter_pages)
+         values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb) returning *`,
+        [
+          n,
+          input.title,
+          input.note,
+          input.pdfKey(n),
+          input.pdfSha256,
+          input.pdfSize,
+          input.pages.length,
+          JSON.stringify(input.avance),
+          JSON.stringify(input.chapterPages),
+        ],
+      );
+      for (let i = 0; i < input.pages.length; i += 100) {
+        const chunk = input.pages.slice(i, i + 100);
+        const values = chunk.map((_, j) => `($1, $${2 * j + 2}, $${2 * j + 3})`).join(", ");
+        await q.query(
+          `insert into version_pages (version_id, page, text) values ${values}`,
+          [v!.id, ...chunk.flatMap((t, j) => [i + j + 1, t])],
+        );
+      }
+      return v!;
+    });
+  }
+
+  listVersions(): Promise<Version[]> {
+    return this.db.query<Version>("select * from versions order by number desc");
+  }
+
+  async getVersion(number: number): Promise<Version | null> {
+    const [v] = await this.db.query<Version>("select * from versions where number = $1", [number]);
+    return v ?? null;
+  }
+
+  async latestVersion(): Promise<Version | null> {
+    const [v] = await this.db.query<Version>("select * from versions order by number desc limit 1");
+    return v ?? null;
+  }
+
+  async pages(versionId: number): Promise<string[]> {
+    const rows = await this.db.query<{ text: string }>(
+      "select text from version_pages where version_id = $1 order by page",
+      [versionId],
+    );
+    return rows.map((r) => r.text);
+  }
+
+  // --- threads and comments ---
+
+  async createThread(
+    version: Version,
+    input: { page: number; anchor: "text" | "point"; quote: string; rects: Rect[]; body: string },
+    viewer: Viewer,
+  ): Promise<number> {
+    return this.db.tx(async (q) => {
+      const [t] = await q.query<{ id: number }>(
+        `insert into threads (version_id, page, anchor, quote, rects, author_kind, director_id)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7) returning id`,
+        [version.id, input.page, input.anchor, input.quote, JSON.stringify(input.rects), viewer.kind, viewer.directorId],
+      );
+      await q.query("insert into comments (thread_id, author_kind, director_id, body) values ($1, $2, $3, $4)", [
+        t!.id,
+        viewer.kind,
+        viewer.directorId,
+        input.body,
+      ]);
+      return t!.id;
+    });
+  }
+
+  async addReply(threadId: number, body: string, viewer: Viewer): Promise<number> {
+    return this.db.tx(async (q) => {
+      const [c] = await q.query<{ id: number }>(
+        "insert into comments (thread_id, author_kind, director_id, body) values ($1, $2, $3, $4) returning id",
+        [threadId, viewer.kind, viewer.directorId, body],
+      );
+      await q.query("update threads set updated_at = now() where id = $1", [threadId]);
+      return c!.id;
+    });
+  }
+
+  async getComment(id: number): Promise<{
+    id: number;
+    thread_id: number;
+    author_kind: AuthorKind;
+    director_id: number | null;
+    deleted_at: Date | null;
+  } | null> {
+    const [c] = await this.db.query<{
+      id: number;
+      thread_id: number;
+      author_kind: AuthorKind;
+      director_id: number | null;
+      deleted_at: Date | null;
+    }>("select id, thread_id, author_kind, director_id, deleted_at from comments where id = $1", [id]);
+    return c ?? null;
+  }
+
+  async editComment(id: number, body: string): Promise<void> {
+    await this.db.query("update comments set body = $2, edited_at = now() where id = $1 and deleted_at is null", [id, body]);
+  }
+
+  /** Soft delete: the row stays (the thread keeps its shape), the text is hidden. */
+  async deleteComment(id: number): Promise<void> {
+    await this.db.query("update comments set deleted_at = coalesce(deleted_at, now()) where id = $1", [id]);
+  }
+
+  async setStatus(threadId: number, status: "open" | "resolved", by: string): Promise<void> {
+    await this.db.query(
+      `update threads set status = $2, resolved_at = case when $2 = 'resolved' then now() else null end,
+       resolved_by = case when $2 = 'resolved' then $3 else null end, updated_at = now() where id = $1`,
+      [threadId, status, by],
+    );
+  }
+
+  /** Threads visible to `viewer`, with their comments. */
+  async listThreads(
+    viewer: Viewer,
+    filter: { versionNumber?: number; status?: "open" | "resolved"; threadId?: number; since?: Date } = {},
+  ): Promise<ThreadOut[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    const p = (v: unknown) => {
+      params.push(v);
+      return `$${params.length}`;
+    };
+    if (filter.versionNumber !== undefined) where.push(`v.number = ${p(filter.versionNumber)}`);
+    if (filter.status) where.push(`t.status = ${p(filter.status)}`);
+    if (filter.threadId !== undefined) where.push(`t.id = ${p(filter.threadId)}`);
+    if (viewer.kind === "director" && (await this.visibility()) === "own") {
+      where.push(`(t.author_kind = 'owner' or t.director_id = ${p(viewer.directorId)})`);
+    }
+    const threads = await this.db.query<{
+      id: number;
+      number: number;
+      page: number;
+      anchor: "text" | "point";
+      quote: string;
+      rects: Rect[];
+      status: "open" | "resolved";
+      resolved_at: Date | null;
+      resolved_by: string | null;
+      author_kind: AuthorKind;
+      director_id: number | null;
+      created_at: Date;
+      updated_at: Date;
+      chapter_pages: ChapterPages[];
+    }>(
+      `select t.*, v.number, v.chapter_pages from threads t join versions v on v.id = t.version_id
+       ${where.length ? "where " + where.join(" and ") : ""}
+       order by v.number desc, t.page, t.id`,
+      params,
+    );
+    if (threads.length === 0) return [];
+    const comments = await this.db.query<{
+      id: number;
+      thread_id: number;
+      author_kind: AuthorKind;
+      director_id: number | null;
+      body: string;
+      created_at: Date;
+      edited_at: Date | null;
+      deleted_at: Date | null;
+    }>(
+      "select * from comments where thread_id = any($1::int[]) order by created_at, id",
+      [threads.map((t) => t.id)],
+    );
+    const names = new Map((await this.listDirectors()).map((d) => [d.id, d.name]));
+    const author = (kind: AuthorKind, id: number | null) => ({
+      kind,
+      director_id: id,
+      name: kind === "owner" ? this.ownerName : (names.get(id ?? -1) ?? "Director(a)"),
+    });
+    const byThread = new Map<number, CommentOut[]>();
+    for (const c of comments) {
+      const list = byThread.get(c.thread_id) ?? [];
+      const deleted = c.deleted_at !== null;
+      list.push({
+        id: c.id,
+        author: author(c.author_kind, c.director_id),
+        body: deleted ? null : c.body,
+        body_html: deleted ? "<p><em>Comentario eliminado.</em></p>" : renderComment(c.body),
+        created_at: iso(c.created_at)!,
+        edited_at: iso(c.edited_at),
+        deleted,
+        mine: c.author_kind === viewer.kind && (viewer.kind === "owner" || c.director_id === viewer.directorId),
+      });
+      byThread.set(c.thread_id, list);
+    }
+    const since = filter.since?.getTime();
+    return threads
+      .map((t): ThreadOut => {
+        const ch = chapterOfPage(t.chapter_pages ?? [], t.page);
+        return {
+          id: t.id,
+          version: t.number,
+          page: t.page,
+          anchor: t.anchor,
+          quote: t.quote,
+          rects: t.rects,
+          status: t.status,
+          resolved_at: iso(t.resolved_at),
+          resolved_by: t.resolved_by,
+          chapter: ch ? { id: ch.id, title: ch.title } : null,
+          author: author(t.author_kind, t.director_id),
+          created_at: iso(t.created_at)!,
+          updated_at: iso(t.updated_at)!,
+          comments: byThread.get(t.id) ?? [],
+        };
+      })
+      .filter((t) => since === undefined || t.comments.some((c) => Date.parse(c.created_at) >= since));
+  }
+
+  async threadVersion(threadId: number): Promise<number | null> {
+    const [r] = await this.db.query<{ number: number }>(
+      "select v.number from threads t join versions v on v.id = t.version_id where t.id = $1",
+      [threadId],
+    );
+    return r?.number ?? null;
+  }
+
+  // --- digest bookkeeping ---
+
+  /** Marks the digest of `day` as sent; false if it already was. */
+  async claimDigest(day: string): Promise<boolean> {
+    const rows = await this.db.query("insert into digest_runs (day) values ($1) on conflict do nothing returning day", [day]);
+    return rows.length > 0;
+  }
+}
+
+export type { Queryable };

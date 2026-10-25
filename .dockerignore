@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+.git
+*.log
+docs/images
+emacs
+test
+deploy
