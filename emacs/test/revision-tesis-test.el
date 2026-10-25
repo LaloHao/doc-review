@@ -82,6 +82,22 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
              "La analítica de datos de viajes se incorpora muy rápido al planificación del transporte público. Esto genera un modelo")))
     (should (revision-tesis--locate-in-index q index))))
 
+(ert-deftest revision-tesis-test-locate-glossary-expansion ()
+  ;; The PDF expands \\gls{LLM} on first use; the source only has the macro.
+  (let* ((index (revision-tesis--index-string revision-tesis-test--chapter))
+         (q (revision-tesis--normalize-quote
+             "Un modelo de lenguaje de gran tamaño (LLM) local procesa los datos de viajes sin que salgan de la organización."))
+         (hit (revision-tesis--locate-in-index q index)))
+    (should hit)
+    (should (string-match-p "procesa los datos de viajes sin que salgan de la organización"
+                            (substring revision-tesis-test--chapter (1- (car hit)) (1- (cdr hit)))))))
+
+(ert-deftest revision-tesis-test-unrelated-quote-not-anchored ()
+  (let ((index (revision-tesis--index-string revision-tesis-test--chapter)))
+    (should-not (revision-tesis--locate-in-index
+                 (revision-tesis--normalize-quote "Las redes neuronales convolucionales clasifican imágenes médicas.")
+                 index))))
+
 (ert-deftest revision-tesis-test-short-quotes-not-anchored ()
   (let ((index (revision-tesis--index-string revision-tesis-test--chapter)))
     (should-not (revision-tesis--locate-in-index (revision-tesis--normalize-quote "Un") index))))

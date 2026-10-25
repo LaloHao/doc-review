@@ -306,25 +306,44 @@ characters to a 1-based offset in TEXT."
 
 (defun revision-tesis--locate-in-index (q index)
   "Find normalized quote Q in INDEX; return (START . END) offsets or nil.
-Exact match first; otherwise the first and last 24 characters of Q, which
-survive small edits made after the PDF was compiled."
+Exact match first.  Otherwise Q is cut in 12-character pieces and the place
+of the source where most pieces fall together wins: that survives edits made
+after the PDF was compiled and text the PDF expands (\\gls{LLM} → \"modelo
+de lenguaje de gran tamaño (LLM)\")."
   (let ((text (car index)) (pos (cdr index)) (n (length q)))
     (when (>= n revision-tesis-min-quote-length)
       (let ((i (string-search q text)))
         (if i
             (cons (aref pos i) (1+ (aref pos (+ i n -1))))
-          (when (>= n 32)
-            (let* ((k 24)
-                   (head (substring q 0 k))
-                   (tail (substring q (- n k)))
-                   (a (string-search head text))
-                   (b (and a (string-search tail text (+ a k)))))
-              (cond
-               ((and a b (< (- (+ b k) a) (+ (* 2 n) 200)))
-                (cons (aref pos a) (1+ (aref pos (+ b k -1)))))
-               (a (cons (aref pos a) (1+ (aref pos (+ a k -1)))))
-               (t (let ((b2 (string-search tail text)))
-                    (and b2 (cons (aref pos b2) (1+ (aref pos (+ b2 k -1)))))))))))))))
+          (revision-tesis--locate-pieces q text pos))))))
+
+(defun revision-tesis--locate-pieces (q text pos)
+  "Fuzzy match of Q in TEXT (POS maps offsets).
+See `revision-tesis--locate-in-index'."
+  (let* ((k 12) (n (length q)) (pieces (/ n k)) (hits nil))
+    (when (>= pieces 2)
+      (dotimes (p pieces)
+        (let ((piece (substring q (* p k) (* (1+ p) k))) (from 0) (count 0) found)
+          (while (and (< count 20) (setq found (string-search piece text from)))
+            ;; (estimated start of the quote, piece start, piece end)
+            (push (list (- found (* p k)) found
+                        ;; The last piece also covers the remainder of Q.
+                        (min (length text) (+ found k (if (= p (1- pieces)) (- n (* pieces k)) 0))))
+                  hits)
+            (setq from (1+ found) count (1+ count)))))
+      (setq hits (sort hits (lambda (a b) (< (car a) (car b)))))
+      ;; Sliding window over the estimated starts: the densest cluster wins.
+      (let ((window (+ (/ n 2) 40)) (best nil) (best-count 0) (tail hits))
+        (while tail
+          (let* ((start (car (car tail)))
+                 (members (cl-loop for h in tail while (<= (car h) (+ start window)) collect h))
+                 (count (length (cl-remove-duplicates members :key (lambda (h) (- (nth 1 h) (car h)))))))
+            (when (> count best-count) (setq best members best-count count)))
+          (setq tail (cdr tail)))
+        (when (and best (>= best-count (max 2 (ceiling (* 0.4 pieces)))))
+          (let ((b (apply #'min (mapcar #'cadr best)))
+                (e (apply #'max (mapcar #'caddr best))))
+            (cons (aref pos b) (1+ (aref pos (1- e))))))))))
 
 (defun revision-tesis--locate (thread files)
   "Locate THREAD's quote in FILES: return (FILE START END) or nil.
