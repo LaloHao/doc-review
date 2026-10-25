@@ -41,10 +41,22 @@ org de cada capítulo.
    chmod 600 ~/.config/revision-tesis/config.json
    ```
 
-   La CLI y Emacs se niegan a usar el archivo si otros usuarios pueden leerlo.
+   La CLI y Emacs se niegan a usar el archivo si otros usuarios pueden leerlo, y
+   si la dirección no empieza con `https://` (el token viaja en cada petición;
+   `http://` solo se acepta para `localhost` o `127.0.0.1`).
 
 3. En el navegador, entra una vez en `https://tesis.hao.systems/entrar` con el
-   token: queda una sesión de 30 días en ese navegador.
+   token: queda una sesión de 30 días en ese navegador (se renueva sola mientras
+   la uses).
+
+   - **Cambiar el token** (`gen-token` otra vez y el SHA-256 nuevo en el Secret)
+     cierra todas tus sesiones del navegador abiertas con el anterior.
+   - **Cerrar todas las sesiones**: en el panel, Ajustes → Sesiones, o
+     `revision-tesis sessions close-all`. Cierra tus sesiones del navegador en
+     todos los equipos (la CLI y Emacs siguen funcionando con el token); con la
+     casilla «También las de todos los directores» (`--directors`), los
+     directores tienen que abrir de nuevo su enlace personal. Úsalo si perdiste
+     un equipo o sospechas que alguien usó tu sesión.
 
 ![Panel del autor](images/04-panel-autor.png)
 
@@ -121,7 +133,7 @@ huella (hash).
 - **Crear**: en el panel, «Agregar director» (nombre, rol, correo opcional), o
 
   ```sh
-  revision-tesis directors add "Dra. Ana Torres Ruiz" --role Director --email ana@…
+  revision-tesis directors add "Dra. Ana Torres Ruiz" --role Director --email ana@… --replies instant
   revision-tesis directors add "Dr. Luis Méndez Ortega" --role Codirector
   ```
 
@@ -138,20 +150,45 @@ huella (hash).
   habilitar con un enlace distinto.
 - `revision-tesis directors list` muestra los IDs.
 
-Al abrir el enlace, el navegador del director guarda una sesión (180 días) y la
-dirección cambia a la página principal, para que el enlace secreto no quede en el
-historial.
+Al abrir el enlace, el navegador del director guarda una sesión (180 días, que se
+renuevan mientras la use) y la dirección cambia a la página principal, para que
+el enlace secreto no quede en el historial. Si ese navegador ya tenía abierta la
+sesión de otra persona (la tuya, por ejemplo, si pruebas el enlace en tu
+navegador), primero pregunta «¿Entrar como …?» en lugar de cambiar de usuario
+sin avisar.
 
 **Qué comentarios ve cada director** (Ajustes): «Todos» (por omisión; colaboran
-entre ellos) o «Solo los suyos y los tuyos».
+entre ellos) o «Solo los suyos y los tuyos». Con «Solo los suyos y los tuyos»,
+cada director ve sus hilos y los tuyos, y dentro de ellos solo tus mensajes y los
+suyos: las respuestas de otro director en un hilo tuyo no se le muestran (ni
+quién lo resolvió, si fue otro director), y tampoco le llegan por correo.
+
+**Avisos de respuestas a los directores** (columna «Correo» del panel, lista
+«Respuestas»; o `revision-tesis directors replies ID instant|daily|never`):
+cuando alguien más responde en un hilo que el director abrió o en el que
+respondió, puede recibir un correo **al momento**, un **resumen diario** o
+**nunca** (por omisión). El director también puede cambiarlo él mismo en
+«Notificaciones», arriba en su vista. Los correos llevan un enlace al hilo, nunca
+su enlace personal (si el sitio le pide entrar, debe usar su enlace personal), y
+respetan la visibilidad: nunca avisan de un comentario que el director no puede
+ver. Requiere correo configurado en el servidor y un correo registrado para el
+director.
+
+Cada director puede escribir hasta 500 comentarios y respuestas en 24 horas
+(`MAX_DIRECTOR_COMMENTS_PER_DAY`), además del límite de 60 por minuto.
 
 ### Leer y responder comentarios
 
 - **Web**: en cada versión, la columna derecha lista los hilos; «Mostrar
   resueltos» muestra también los cerrados. Puedes responder, marcar resuelto o
   reabrir, y editar o eliminar tus propios mensajes.
+- **Quién resuelve**: un hilo solo lo pueden marcar como resuelto quien lo abrió
+  y tú (siempre, también desde Emacs y la CLI). Cualquiera que vea el hilo puede
+  reabrirlo. A los demás directores no se les muestra «Marcar resuelto».
 - **Telegram / correo**: un aviso por cada comentario o respuesta de un director,
-  con la cita y el enlace al hilo; o un resumen diario.
+  con la cita y el enlace al hilo; o un resumen diario. Si un director **edita**
+  un comentario, también te llega un aviso con el texto anterior y el nuevo (el
+  servidor guarda las últimas 20 versiones: `GET /api/comments/ID/edits`).
 - **CLI**: `revision-tesis comments` (abiertos), `--all`, `--version N`, `--json`.
 - **Emacs**: `M-x revision-tesis-comentarios` (`SPC m z c`) abre un buffer org con
   los hilos abiertos agrupados por capítulo y página: autor, fecha, cita,
@@ -159,7 +196,9 @@ entre ellos) o «Solo los suyos y los tuyos».
   enlace al hilo en la web. Los que no se pudieron ubicar (comentarios sobre un
   punto, o texto que ya cambió) van al final, con un enlace al archivo del
   capítulo. Con el cursor en un hilo: `SPC m z r` responde, `SPC m z x` lo
-  resuelve (`C-u` para reabrir), `SPC m z c` actualiza.
+  resuelve (`C-u` para reabrir; como autor puedes resolver cualquier hilo),
+  `SPC m z c` actualiza. El texto de los directores se muestra sin caracteres de
+  control ni de dirección (bidi), igual que en la CLI.
 
 ![Respuesta del autor](images/05-visor-autor.png)
 
@@ -197,6 +236,8 @@ configuración.
 - **Notas en el texto** (`revision-tesis-mode`): cada comentario abierto aparece
   como nota de Flymake sobre el texto citado en el `.org`. Los comentarios se
   descargan en segundo plano al abrir el archivo; `SPC m z a` los vuelve a pedir.
+  Si la descarga falla (token incorrecto, servidor caído), el motivo aparece en el
+  área de eco en lugar de quedarse sin notas en silencio.
   Con el cursor sobre una nota, `SPC m z r` responde a ese hilo. Doom usa Flycheck
   para otros chequeos; Flymake funciona a la par.
 - **Cómo se ubica la cita**: se comparan solo letras y números (sin espacios,
@@ -226,7 +267,10 @@ Cada canal se activa por separado (ver la tabla de variables en el README).
     publicar una versión, y el enlace personal solo con «Enviar enlace por correo».
 - **Resumen diario**: `DIGEST_HOUR=8` envía a las 8:00 (hora de `TZ`) los
   comentarios de directores de las últimas 24 horas, por los canales activos.
-  Con `NOTIFY_INSTANT=false` solo llega el resumen.
+  Con `NOTIFY_INSTANT=false` solo llega el resumen. Si todos los canales fallan,
+  se vuelve a intentar cada 5 minutos ese mismo día. Los resúmenes diarios de los
+  directores que lo eligieron salen a la misma hora (a las 8:00 si `DIGEST_HOUR`
+  no está definido).
 
 ## Para los directores
 
@@ -242,13 +286,16 @@ Cada canal se activa por separado (ver la tabla de variables en el README).
 >   «Comentar selección». Escriba su comentario y pulse «Publicar comentario».
 > - **Comentar un lugar** (una figura, un espacio): pulse «Comentar un punto» y
 >   haga clic en el lugar de la página.
-> - Sus comentarios y los de los demás aparecen a la derecha. Puede **responder**,
->   **marcar resuelto** o **reabrir** un hilo, y **editar** o **eliminar** sus
->   propios comentarios. El texto admite `**negritas**`, `*cursivas*` y enlaces.
+> - Sus comentarios y los de los demás aparecen a la derecha. Puede **responder**
+>   y **reabrir** cualquier hilo, **marcar resuelto** los hilos que usted abrió, y
+>   **editar** o **eliminar** sus propios comentarios. El texto admite
+>   `**negritas**`, `*cursivas*` y enlaces.
 > - Arriba puede cambiar de **versión**. «Avance y cambios» muestra el avance por
 >   capítulo y qué cambió respecto a la versión anterior.
-> - Si lo desea, puede recibir un correo cada vez que se publique una versión
->   nueva.
+> - En **Notificaciones** (arriba) puede elegir si quiere un correo cuando
+>   alguien responda en sus hilos (al momento, un resumen diario o nunca) y cuando
+>   se publique una versión nueva. Los correos traen un enlace al hilo; si el
+>   sitio le pide entrar, use su enlace personal.
 >
 > Gracias por su revisión.
 

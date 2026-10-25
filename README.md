@@ -8,15 +8,17 @@ to the org source.
   (words per chapter, goal, status) and an optional note. The server never
   compiles LaTeX.
 - Each director gets a **personal secret link**. They select text in the PDF (or
-  click a spot) and comment; threads have replies, resolve/reopen, edit and
-  (soft) delete of one's own comments. Comments belong to the version they were
-  made on.
+  click a spot) and comment; threads have replies, resolve (the opener or the
+  owner) / reopen (anyone who sees the thread), edit and (soft) delete of one's
+  own comments. Comments belong to the version they were made on.
 - Each version shows the **progress per chapter** and **what changed** since the
   previous version: word deltas from `avance.json` and a sentence-level text diff
   per chapter, computed on the server from the PDF text.
 - The author is notified of new comments and replies by **Telegram** and/or
-  **email** (SMTP, e.g. Proton Mail), optionally as a daily digest. Directors can
-  opt in to an email when a new version is published.
+  **email** (SMTP, e.g. Proton Mail), optionally as a daily digest, including
+  when a director edits a comment. Directors can opt in to an email when a new
+  version is published, and to emails (at once or a daily digest) when someone
+  else replies in a thread they opened or replied to.
 - **Emacs** (`emacs/revision-tesis.el`): publish from the thesis directory, read
   the comments in an org buffer with links to the matching place in the org
   sources, reply, resolve, and see open comments as Flymake notes on the text.
@@ -47,12 +49,12 @@ browser (pdf.js viewer, plain ES modules)      Emacs (url.el)   CLI (fetch)
 | `src/server/pages.ts` | Server-rendered HTML (Spanish UI); everything escaped |
 | `src/repo.ts` | All SQL |
 | `src/db/` | `pg`/PGlite adapter and migrations (`schema_migrations`) |
-| `src/pdf/extract.ts` | PDF validation and text extraction (pdf.js legacy build) |
+| `src/pdf/` | PDF validation and text extraction (pdf.js legacy build) in a worker thread |
 | `src/diff.ts` | Chapter location in the PDF, Myers diff over sentences |
 | `src/avance.ts` | `avance.json` validation; generation from `tesis.org` includes |
 | `src/notify/notify.ts` | Telegram, SMTP, digest, director emails |
 | `src/storage.ts` | PDF storage: directory or S3 |
-| `src/cli.ts`, `src/client.ts` | CLI (server and owner commands) |
+| `src/cli.ts`, `src/client.ts`, `src/format.ts` | CLI (server and owner commands) |
 | `public/` | Browser code: `viewer.js` (pdf.js, selection, threads), `admin.js` |
 | `emacs/` | Emacs client and its ERT tests |
 | `deploy/helm/revision-tesis` | Helm chart |
@@ -60,18 +62,23 @@ browser (pdf.js viewer, plain ES modules)      Emacs (url.el)   CLI (fetch)
 
 ### Data model
 
-`directors` (name, role, optional email + opt-in, `token_hash`, revoked/rotated
-dates) · `sessions` (`id_hash`, kind owner/director, CSRF token, sliding expiry) ·
-`versions` (number, note, PDF key + SHA-256, page count, `avance` JSON, located
-chapter pages) · `version_pages` (extracted text) · `threads` (version, page,
-anchor `text`/`point`, quote, normalized rects, status) · `comments` (thread,
-author, body, edited/deleted timestamps — deletes are soft) · `settings`
-(`comments_visibility`) · `digest_runs`.
+`directors` (name, role, optional email, `notify_versions`, `notify_replies`
+instant/daily/never, `token_hash`, revoked/rotated dates) · `sessions`
+(`id_hash`, kind owner/director, CSRF token, sliding expiry, owner-token
+fingerprint) · `versions` (number, note, PDF key + SHA-256, page count, `avance`
+JSON, located chapter pages) · `version_pages` (extracted text) ·
+`version_diffs` (the stored diff against the previous version) · `threads`
+(version, page, anchor `text`/`point`, quote, normalized rects, status, who
+resolved it) · `comments` (thread, author, body, edited/deleted timestamps —
+deletes are soft) · `comment_edits` (previous texts, the last 20) · `settings`
+(`comments_visibility`) · `digest_runs`, `director_digest_runs`.
 
-Migrations are in `src/db/migrations.ts` and run at startup with
-`DATABASE_ADMIN_URL` (the CloudNativePG `<app>_admin` role, owner of the tables);
-the app then runs with `DATABASE_URL` (the `<app>_app` role). `revision-tesis
-migrate` runs them by hand.
+Migrations are in `src/db/migrations.ts`. In the cluster the chart runs them in
+a Helm hook Job with the CloudNativePG `<app>_admin` role (owner of the tables),
+whose DSN only that Job sees; the app runs with `DATABASE_URL` (the `<app>_app`
+role) and `MIGRATE_ON_START=false`, and refuses to start if one is pending.
+Locally they run at startup (`DATABASE_ADMIN_URL`, default `DATABASE_URL`).
+`revision-tesis migrate` runs them by hand.
 
 ### Why these choices
 
@@ -100,16 +107,24 @@ migrate` runs them by hand.
 - **Director links**: 32 random bytes (base64url), stored as SHA-256, revocable and
   rotatable (rotation and revocation delete the director's sessions). Visiting
   `/acceso/<secret>` creates a session and redirects (303) to `/`, so the secret
-  doesn't stay in history; `Referrer-Policy: no-referrer` everywhere.
+  doesn't stay in history. The path is never URL-decoded (anything but 43
+  base64url characters is a 404) and never logged. If the browser already has a
+  session of someone else, a confirmation page asks first (switching is a POST
+  with that session's CSRF token). `/acceso` pages are `Referrer-Policy:
+  no-referrer`; the rest of the site is `same-origin`.
 - **Owner**: `Authorization: Bearer` with the owner token (CLI, Emacs); on the
   web the token is entered once at `/entrar` and becomes a session. The server
-  only knows `OWNER_TOKEN_SHA256`. Comparisons are timing-safe.
+  only knows `OWNER_TOKEN_SHA256`. Comparisons are timing-safe. Owner web
+  sessions store a fingerprint of `OWNER_TOKEN_SHA256`: rotating the token ends
+  them. «Cerrar todas las sesiones» (panel, `POST /api/sessions/close-all`, CLI
+  `sessions close-all [--directors]`) ends every owner web session and,
+  optionally, every director session.
 - **Sessions**: random 32-byte ids stored hashed; cookie `__Host-rt_session`,
   `HttpOnly; Secure; SameSite=Lax`; 30 days (owner) / 180 days (directors),
-  sliding.
+  sliding (the cookie's `Max-Age` is renewed with the server-side expiry).
 - **CSRF** for cookie-authenticated mutations: same origin required (`Origin`
-  equal to `PUBLIC_URL`; for HTML form posts, which carry `Origin: null` under
-  `no-referrer`, `Sec-Fetch-Site: same-origin`) **and** the session's CSRF token
+  equal to `PUBLIC_URL`; when a browser sends `Origin: null` or none,
+  `Sec-Fetch-Site: same-origin`) **and** the session's CSRF token
   (`X-CSRF-Token` header or `_csrf` field). The login form uses a pre-session
   double-submit cookie. Bearer requests read no cookies.
 - **Output encoding**: all HTML is built with escaping; comment bodies are escaped
@@ -118,18 +133,30 @@ migrate` runs them by hand.
   that server-rendered HTML; everything else is set with `textContent`. Emacs shows
   untrusted text as org fixed-width lines (`: …`), so it can't become a link or
   markup. Telegram messages are plain text.
+- **Control characters**: untrusted text loses C0/C1 controls (except tab and
+  newline) and bidi controls (U+202A–202E, U+2066–2069, ALM/LRM/RLM) on input,
+  and again on output in the CLI, Emacs (buffers, Flymake, prompts) and
+  Telegram/email, so it can't drive a terminal or read differently than it is.
+- **Visibility**: with «Solo los suyos y los tuyos», a director gets only the
+  threads opened by the owner or by them, and in them only the owner's comments
+  and their own (also `resolved_by`, and every notification).
 - **Uploads**: PDF ≤ `MAX_PDF_MB` (50), `%PDF-` magic bytes, and pdf.js must open
-  every page before the version is accepted; `avance.json` ≤ 1 MB, validated
+  every page before the version is accepted; the parsing runs in a worker thread
+  with a 512 MB heap limit and a 90 s timeout. `avance.json` ≤ 1 MB, validated
   field by field. JSON bodies ≤ 64 KB; comments ≤ 10 000 characters, quotes ≤
-  2 000, ≤ 50 rectangles in [0, 1].
-- **Rate limits** (per IP, from `CF-Connecting-IP` behind Cloudflare): director
-  links 20/10 min, owner login 10/10 min, failed bearer tokens 30/10 min; writes
-  60/min per session.
+  2 000, ≤ 50 rectangles in [0, 1]; versions, pages and ids are integers in
+  range (else 400, never a database error).
+- **Rate limits** (per IP — IPv6 per /64 — from `CF-Connecting-IP` behind
+  Cloudflare): director links 20/10 min, owner login 10/10 min, failed bearer
+  tokens 30/10 min; writes 60/min per person; at most
+  `MAX_DIRECTOR_COMMENTS_PER_DAY` (500) threads + replies per director in 24 h.
+  The limiter keeps at most 10 000 keys in memory.
 - **Headers**: CSP `default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
   worker-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'
   data:; connect-src 'self'; form-action 'self'; base-uri 'none';
   frame-ancestors 'none'` (no inline scripts or styles), `X-Frame-Options: DENY`,
   `nosniff`, COOP/CORP same-origin, `Permissions-Policy`, HSTS on https,
+  `Referrer-Policy: same-origin`, `X-Robots-Tag: noindex, nofollow`,
   `Cache-Control: no-store` for pages and API.
 - **Logs** never contain tokens, links, cookies or SMTP credentials; Telegram
   errors don't include the request URL (it holds the bot token).
@@ -138,6 +165,10 @@ migrate` runs them by hand.
   fits PodSecurity `restricted`.
 - Emails to directors never include their link, except when the owner explicitly
   chooses "Enviar enlace por correo" when creating or rotating it.
+- **Clients**: the CLI and Emacs only talk to `https://` servers (`http://` only
+  for localhost), since the owner token goes in every request.
+- **Network** (chart): an optional NetworkPolicy lets only cloudflared in and only
+  DNS, Postgres and HTTPS/SMTP out.
 
 ## Running locally
 
@@ -179,17 +210,19 @@ also drives the UI with playwright-core and refreshes `docs/images/`.
 | `OWNER_NAME` | Eduardo Ejemplo | |
 | `DATABASE_URL` | `pglite:$DATA_DIR/pglite` | `postgres://…` or `pglite:<dir>`/`pglite:memory` |
 | `DATABASE_ADMIN_URL` | `DATABASE_URL` | Role that runs migrations |
+| `MIGRATE_ON_START` | `true` | `false`: don't migrate, refuse to start if one is pending (the chart's Job migrates) |
 | `DATA_DIR` | `./data` | |
 | `STORAGE_TYPE` | `fs` | `fs` (`STORAGE_DIR`, default `$DATA_DIR/files`) or `s3` |
 | `S3_URL`, `S3_ENDPOINT`, `S3_REGION` | —, —, `auto` | `s3://bucket/prefix`; credentials in `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` |
 | `TRUST_PROXY` | — | `cloudflare` to read `CF-Connecting-IP` |
 | `MAX_PDF_MB` | `50` | |
+| `MAX_DIRECTOR_COMMENTS_PER_DAY` | `500` | Threads + replies per director in 24 h; `0` = no cap |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | — | Telegram off unless both are set |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY` | —, 587, `starttls` | `starttls`, `tls` (465) or `none` (localhost relay only) |
 | `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | — | `SMTP_FROM` defaults to `SMTP_USER` |
 | `EMAIL_OWNER_TO` | — | Owner address for comment emails |
 | `NOTIFY_INSTANT` | `true` | `false` = digest only |
-| `DIGEST_HOUR` | — | 0–23 in `TZ`; unset = no digest |
+| `DIGEST_HOUR` | — | 0–23 in `TZ`; unset = no owner digest (directors' digests then go at 8:00) |
 | `TZ` | `America/Mexico_City` | |
 
 **Proton Mail**: SMTP submission works with paid plans and only for
@@ -220,12 +253,15 @@ tested with a fake `fetch`.
 | GET | `/api/versions/:n` · `/latest` · `/:n/pdf` · `/:n/diff` | |
 | GET | `/api/threads?version=N\|latest&status=open\|resolved\|all` | Threads with comments |
 | POST | `/api/threads` | `{version, page, anchor: text\|point, quote, rects, body}` |
-| POST | `/api/threads/:id/comments` · `/resolve` · `/reopen` | |
+| POST | `/api/threads/:id/comments` · `/resolve` · `/reopen` | Resolve: the thread's opener or the owner (else 403) |
 | PATCH/DELETE | `/api/comments/:id` | Own comments only; delete is soft |
+| GET | `/api/comments/:id/edits` | Owner; previous texts of an edited comment |
 | GET/POST | `/api/directors` | Owner; POST `{name, role, email, notify_versions, send_link}` returns the link once |
-| PATCH | `/api/directors/:id` | Name, role, email, notify_versions |
+| PATCH | `/api/directors/:id` | Name, role, email, notify_versions, notify_replies (`instant\|daily\|never`) |
 | POST | `/api/directors/:id/rotate` · `/revoke` | Rotate returns a new link (`send_link` optional) |
 | GET/PUT | `/api/settings` | `comments_visibility: all\|own` |
+| POST | `/api/sessions/close-all` | Owner; `{directors: true}` also closes the directors' sessions |
+| GET/POST | `/notificaciones` | A director's own notification settings (HTML form) |
 
 ## Backups
 
