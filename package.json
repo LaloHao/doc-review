@@ -16,7 +16,7 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "test:emacs": "emacs -Q --batch -L emacs -l emacs/test/doc-review-test.el -f ert-run-tests-batch-and-exit",
+    "test:emacs": "make test-emacs",
     "dev": "pnpm build && node dist/cli.js serve"
   },
   "packageManager": "pnpm@12.11.2",
