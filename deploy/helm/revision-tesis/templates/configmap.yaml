@@ -1,0 +1,42 @@
+{{- if not .Values.publicUrl }}{{ fail "publicUrl is required" }}{{ end }}
+{{- if not (has .Values.storage.type (list "pvc" "s3")) }}{{ fail "storage.type must be pvc or s3" }}{{ end }}
+{{- if not (has .Values.database.type (list "postgres" "embedded")) }}{{ fail "database.type must be postgres or embedded" }}{{ end }}
+{{- if and (eq .Values.storage.type "s3") (or (not .Values.storage.s3.url) (not .Values.storage.s3.endpoint)) }}{{ fail "storage.s3.url and storage.s3.endpoint are required" }}{{ end }}
+{{- if and (eq .Values.database.type "postgres") (not .Values.envSecretName) }}{{ fail "envSecretName (with DATABASE_URL) is required with database.type=postgres" }}{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "revision-tesis.labels" . | nindent 4 }}
+data:
+  PUBLIC_URL: {{ .Values.publicUrl | quote }}
+  OWNER_NAME: {{ .Values.config.ownerName | quote }}
+  TZ: {{ .Values.config.timeZone | quote }}
+  TRUST_PROXY: {{ ternary "cloudflare" "none" .Values.config.trustCloudflare | quote }}
+  MAX_PDF_MB: {{ .Values.config.maxPdfMb | quote }}
+  NOTIFY_INSTANT: {{ .Values.config.notifyInstant | quote }}
+  DIGEST_HOUR: {{ .Values.config.digestHour | toString | quote }}
+  EMAIL_OWNER_TO: {{ .Values.config.ownerEmail | quote }}
+  {{- with .Values.config.smtp }}
+  {{- if .host }}
+  SMTP_HOST: {{ .host | quote }}
+  SMTP_PORT: {{ .port | quote }}
+  SMTP_SECURITY: {{ .security | quote }}
+  SMTP_USER: {{ .user | quote }}
+  SMTP_FROM: {{ .from | default .user | quote }}
+  {{- end }}
+  {{- end }}
+  DATA_DIR: /data
+  {{- if eq .Values.storage.type "s3" }}
+  STORAGE_TYPE: s3
+  S3_URL: {{ .Values.storage.s3.url | quote }}
+  S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}
+  S3_REGION: {{ .Values.storage.s3.region | quote }}
+  {{- else }}
+  STORAGE_TYPE: fs
+  STORAGE_DIR: /data/files
+  {{- end }}
+  {{- if eq .Values.database.type "embedded" }}
+  DATABASE_URL: pglite:/data/pglite
+  {{- end }}

@@ -1,0 +1,84 @@
+# revision-tesis: one Deployment (a single replica: rate limits live in memory and
+# the PDF volume is ReadWriteOnce), a Service, a ConfigMap with the non-secret
+# settings and, when needed, a PVC. Expose the Service through Cloudflare Tunnel;
+# the chart has no Ingress.
+
+image:
+  repository: ghcr.io/lalohao/revision-tesis
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# e.g. [{name: ghcr-pull-secret}] for a private copy of the image.
+imagePullSecrets: []
+
+# Public URL, exactly as the browser sees it (used for links and the CSRF origin
+# check). Required.
+publicUrl: ""
+
+# Name of an existing Secret (never created by this chart) whose keys become
+# environment variables. Expected keys:
+#   OWNER_TOKEN_SHA256            sha256 of the owner token (revision-tesis gen-token)
+#   DATABASE_URL                  postgres://<app role>@…  (runtime)
+#   DATABASE_ADMIN_URL            postgres://<admin role>@… (migrations at startup)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   (optional)
+#   SMTP_PASSWORD                 (optional; a Proton Mail SMTP token, for example)
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   (when storage.type is s3, unless
+#                                  storage.s3.credentialsSecret is set)
+envSecretName: ""
+
+# Non-secret settings (a ConfigMap; the Deployment restarts when they change).
+config:
+  ownerName: "Eduardo Ejemplo"
+  timeZone: America/Mexico_City
+  # Read the client IP from CF-Connecting-IP (only behind Cloudflare Tunnel).
+  trustCloudflare: true
+  maxPdfMb: 50
+  notifyInstant: true
+  # Hour (0-23, timeZone) of the daily digest; "" = no digest.
+  digestHour: ""
+  # Owner address for email notifications ("" = none).
+  ownerEmail: ""
+  smtp:
+    host: ""            # e.g. smtp.protonmail.ch
+    port: 587
+    security: starttls  # starttls | tls (465) | none (local relay only)
+    user: ""            # e.g. tesis@your-domain (the SMTP token's address)
+    from: ""            # defaults to user; e.g. "Revisión de tesis <tesis@your-domain>"
+
+# Where the PDFs go.
+# - pvc: a PersistentVolumeClaim mounted at /data (created here, kept on uninstall).
+# - s3: an S3 bucket (Cloudflare R2: endpoint https://<account>.r2.cloudflarestorage.com).
+storage:
+  type: pvc
+  s3:
+    url: ""                 # s3://bucket/optional/prefix
+    endpoint: ""
+    region: auto
+    # Existing Secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY ("" = take
+    # them from envSecretName).
+    credentialsSecret: ""
+  pvc:
+    size: 5Gi
+    storageClassName: ""
+    existingClaim: ""
+
+# Database. "postgres": DATABASE_URL/DATABASE_ADMIN_URL from envSecretName (the
+# cluster's CloudNativePG). "embedded": PGlite on the /data volume (single pod, no
+# database server; needs the PVC).
+database:
+  type: postgres
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    # Parsing a 50 MB PDF with pdf.js needs headroom.
+    memory: 1Gi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+
+service:
+  port: 8080

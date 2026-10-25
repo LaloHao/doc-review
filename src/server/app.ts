@@ -255,6 +255,10 @@ export function createApp(deps: AppDeps) {
 
   // --- public routes ---
 
+  // Liveness: the process answers (no database, so a database outage doesn't
+  // restart the pod in a loop). Readiness (/healthz) also checks the database.
+  route("GET", "/livez", async (c) => send(c.res, 200, "ok", "text/plain; charset=utf-8"));
+
   route("GET", "/healthz", async (c) => {
     await repo.db.query("select 1");
     send(c.res, 200, "ok", "text/plain; charset=utf-8");
@@ -725,7 +729,7 @@ export function createApp(deps: AppDeps) {
         }
       }
       if (!found) throw new HttpError(allowed ? 405 : 404, allowed ? "Método no permitido." : "No encontrado.");
-      if (!isStatic && url.pathname !== "/healthz") await authenticate(c);
+      if (!isStatic && url.pathname !== "/healthz" && url.pathname !== "/livez") await authenticate(c);
       await found.handler(c);
     } catch (e) {
       const err = e instanceof HttpError ? e : null;
