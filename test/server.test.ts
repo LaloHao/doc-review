@@ -188,6 +188,8 @@ describe("invitations and links", () => {
     luisLink = r.link;
     luisInv = r.invitationId;
     expect((await s.ownerJson("POST", "/api/documents/thesis/invitations", { person_id: anaPerson })).status).toBe(409);
+    expect((await s.ownerJson("POST", "/api/documents/thesis/invitations", { person_id: 1.5 })).status).toBe(400);
+    expect((await s.ownerJson("POST", "/api/documents/thesis/invitations", { person_id: 999 })).status).toBe(404);
 
     const rows = await s.repo.db.query<{ token_hash: string }>("select token_hash from invitations");
     const secret = anaThesisLink.split("/").pop()!;
@@ -581,7 +583,9 @@ describe("owner web login and dashboard", () => {
     const manage = await (await b.get("/d/thesis/manage", { "accept-language": "en" })).text();
     expect(manage).toContain("Codirector(a)");
     expect(manage).toContain('list="role-suggestions"');
-    expect(manage).toContain('<option value="Co-director">');
+    // Role suggestions in the document's language (the thesis is in Spanish).
+    expect(manage).toContain('<option value="Codirector(a)">');
+    expect(await (await b.get("/d/report/manage", { "accept-language": "en" })).text()).toContain('<option value="Co-director">');
     expect(s.logs.join("\n")).not.toContain(OWNER_TOKEN);
   });
 

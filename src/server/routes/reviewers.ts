@@ -5,7 +5,7 @@ import type { Document, Invitation, Person } from "../../repo.js";
 import type { App, Ctx } from "../context.js";
 import { HttpError, json, readJson } from "../http.js";
 import type { Router } from "../router.js";
-import { emailField, line, replyNotify, toInt } from "../validate.js";
+import { emailField, intField, line, replyNotify, toInt } from "../validate.js";
 
 export const personJson = (p: Person) => ({
   id: p.id,
@@ -106,7 +106,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
     const role = "role" in b ? line(b.role, "field.role", 100) : doc.default_role;
     let person: Person | null;
     if (b.person_id !== undefined && b.person_id !== null && b.person_id !== "") {
-      person = await repo.getPerson(typeof b.person_id === "number" ? b.person_id : toInt(String(b.person_id)));
+      person = await repo.getPerson(typeof b.person_id === "number" ? intField(b.person_id, "field.id") : toInt(String(b.person_id)));
       if (!person) throw new HttpError(404, "err.no_person");
     } else {
       person = await repo.createPerson({ name: line(b.name, "field.name", 200, { required: true }), email: emailField(b.email) });

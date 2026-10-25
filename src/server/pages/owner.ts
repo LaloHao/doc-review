@@ -1,7 +1,7 @@
 // The owner's pages: the dashboard (documents, people, channels, sessions) and a
 // document's management page (versions, reviewers, settings).
 
-import { LANGS, type Lang, type Tr } from "../../i18n/index.js";
+import { LANGS, translator, type Lang, type Tr } from "../../i18n/index.js";
 import type { Document, DocumentSummary, InvitationWithDocument, InvitationWithPerson, Person, Version, Visibility } from "../../repo.js";
 import { REPLY_NOTIFY, VISIBILITIES } from "../../repo.js";
 import { esc } from "../../text.js";
@@ -217,7 +217,7 @@ export function documentManagePage(
               <label>${tr.e("people.email_optional")} <input type="email" name="email" maxlength="320"></label>
             </div>
             <label>${tr.e("home.role")} <input name="role" maxlength="100" list="role-suggestions" value="${esc(doc.default_role)}"></label>
-            ${roleDatalist(tr)}
+            ${roleDatalist(translator(doc.language))}
             <label class="check"><input type="checkbox" name="send_link"> ${tr.e("manage.send_link")}</label>
             <button type="submit">${tr.e("manage.create_link")}</button>
           </form>
@@ -234,6 +234,7 @@ export function documentManagePage(
           <label>${tr.e("doc.field_language")} <select name="language">${langOptions(tr, doc.language)}</select></label>
           <fieldset><legend>${tr.e("doc.field_visibility")}</legend>${visibilityRadios(tr, doc.visibility)}</fieldset>
           <label>${tr.e("doc.field_default_role")} <input name="default_role" maxlength="100" list="role-suggestions" value="${esc(doc.default_role)}"></label>
+          ${doc.archived_at ? roleDatalist(translator(doc.language)) : ""}
           <button type="submit">${tr.e("common.save")}</button>
           <span id="settings-status" class="muted" role="status"></span>
         </form>
