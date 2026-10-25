@@ -1000,7 +1000,15 @@ With prefix MANAGE, the document's management page."
   "Keys of the documents list.")
 
 (define-derived-mode doc-review-documents-mode tabulated-list-mode "Doc-Review-Documents"
-  "Your documents on the doc-review server.  RET or o: open in the browser.")
+  "Your documents on the doc-review server.
+RET or o: open in the browser; g: refresh."
+  (add-hook 'tabulated-list-revert-hook #'doc-review--documents-revert nil t))
+
+(defun doc-review--documents-revert ()
+  "Fetch the documents list again."
+  (setq tabulated-list-entries
+        (doc-review--documents-entries
+         (alist-get 'documents (doc-review--request doc-review--documents-project "GET" "/api/documents")))))
 
 (defun doc-review-documents-open ()
   "Open the document at point in the browser."
