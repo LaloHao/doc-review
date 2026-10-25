@@ -238,6 +238,21 @@ export function createApp(deps: AppDeps) {
     if (wait > 0) throw new HttpError(429, "Demasiados intentos. Espere un momento.", { "retry-after": String(wait) });
   };
 
+  /**
+   * New threads and replies: 60 a minute per person (not per session: a new
+   * session from the same link doesn't reset it), and a generous daily cap for
+   * each director.
+   */
+  const writeAllowed = async (viewer: Viewer) => {
+    limited(writeLimiter, viewer.kind === "owner" ? "w:owner" : `w:d${viewer.directorId}`);
+    if (viewer.kind === "director" && config.maxDirectorCommentsPerDay > 0) {
+      const n = await repo.countDirectorComments(viewer.directorId!, new Date(Date.now() - 24 * 3600_000));
+      if (n >= config.maxDirectorCommentsPerDay) {
+        throw new HttpError(429, `Llegó al máximo de ${config.maxDirectorCommentsPerDay} comentarios en 24 horas. Intente más tarde.`);
+      }
+    }
+  };
+
   const layout = (c: Ctx, title: string): pages.Layout => ({
     title,
     who: c.session ? { kind: c.session.kind, name: whoName(c.session) } : null,
@@ -397,7 +412,7 @@ export function createApp(deps: AppDeps) {
   });
 
   route("POST", "/entrar", async (c) => {
-    limited(loginLimiter, c.ip);
+    limited(loginLimiter, ipBucket(c.ip));
     if (!sameOrigin(c)) throw new HttpError(403, "Origen no permitido.");
     const form = await readForm(c.req);
     const pre = parseCookies(c.req.headers.cookie).get(PRE_COOKIE) ?? "";
@@ -577,7 +592,7 @@ export function createApp(deps: AppDeps) {
   route("POST", "/api/threads", async (c) => {
     const viewer = requireAny(c);
     checkCsrf(c);
-    limited(writeLimiter, `w:${c.session!.idHash}`);
+    await writeAllowed(viewer);
     const b = await readJson(c.req);
     const v = await getVersionOr404(intField(b.version, "version"));
     if (typeof b.page !== "number" || !Number.isInteger(b.page) || b.page < 1 || b.page > v.page_count) {
@@ -598,7 +613,7 @@ export function createApp(deps: AppDeps) {
   route("POST", "/api/threads/:id/comments", async (c) => {
     const viewer = requireAny(c);
     checkCsrf(c);
-    limited(writeLimiter, `w:${c.session!.idHash}`);
+    await writeAllowed(viewer);
     const t = await visibleThread(c, toInt(c.params[0]));
     const b = await readJson(c.req);
     const body = str(b.body, "La respuesta", 10_000, { required: true });
@@ -761,7 +776,7 @@ export function createApp(deps: AppDeps) {
     if (auth !== undefined) {
       const m = /^Bearer\s+(\S+)$/i.exec(auth);
       if (!m || !ownerTokenOk(m[1]!)) {
-        limited(bearerLimiter, c.ip);
+        limited(bearerLimiter, ipBucket(c.ip));
         throw new HttpError(401, "Token no válido.", { "www-authenticate": 'Bearer realm="revision-tesis"' });
       }
       c.bearer = true;

@@ -41,6 +41,8 @@ export interface Config {
   /** Read the client IP from CF-Connecting-IP (behind Cloudflare Tunnel). */
   trustCloudflare: boolean;
   maxPdfBytes: number;
+  /** New threads + replies per director in 24 hours (0 = no cap). */
+  maxDirectorCommentsPerDay: number;
   telegram: { botToken: string; chatId: string } | null;
   smtp: SmtpConfig | null;
   /** Owner address for email notifications ("" = no owner emails). */
@@ -161,6 +163,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ownerName: str(env, "OWNER_NAME", "Eduardo Ejemplo"),
     trustCloudflare: str(env, "TRUST_PROXY") === "cloudflare",
     maxPdfBytes: int(env, "MAX_PDF_MB", 50) * 1024 * 1024,
+    maxDirectorCommentsPerDay: int(env, "MAX_DIRECTOR_COMMENTS_PER_DAY", 500),
     telegram,
     smtp,
     ownerEmail: str(env, "EMAIL_OWNER_TO"),

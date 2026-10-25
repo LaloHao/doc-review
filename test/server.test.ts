@@ -668,3 +668,37 @@ describe("owner sessions", () => {
     }
   });
 });
+
+describe("write limits", () => {
+  it("cap each director's comments per day and don't reset with a new session", async () => {
+    const fresh = await startTestServer({ MAX_DIRECTOR_COMMENTS_PER_DAY: "3" });
+    try {
+      const bearer = { authorization: `Bearer ${OWNER_TOKEN}` };
+      const f = new FormData();
+      f.set("pdf", new Blob([sampleThesis() as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "t.pdf");
+      f.set("avance", new Blob([JSON.stringify(sampleAvance())]), "a.json");
+      expect((await fetch(fresh.url + "/api/versions", { method: "POST", headers: bearer, body: f })).status).toBe(201);
+      const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
+      const session = async () => {
+        const cookie = (await fetch(fresh.url + new URL(d.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
+        const csrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie } })).json()) as { csrf: string }).csrf;
+        return (body: unknown) =>
+          fetch(fresh.url + "/api/threads", {
+            method: "POST",
+            headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }).then((r) => r.status);
+      };
+      const t = { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
+      const first = await session();
+      expect([await first(t), await first(t), await first(t), await first(t)]).toEqual([201, 201, 201, 429]);
+      const second = await session();
+      expect(await second(t)).toBe(429);
+      // The owner has no daily cap.
+      const own = await fetch(fresh.url + "/api/threads", { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(t) });
+      expect(own.status).toBe(201);
+    } finally {
+      await fresh.stop();
+    }
+  });
+});

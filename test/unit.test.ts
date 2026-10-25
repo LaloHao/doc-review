@@ -9,7 +9,7 @@ import { Notifier } from "../src/notify/notify.js";
 import { extractPdf, joinTextItems, looksLikePdf } from "../src/pdf/extract.js";
 import type { ThreadOut } from "../src/repo.js";
 import { safeEqual } from "../src/server/crypto.js";
-import { RateLimiter } from "../src/server/ratelimit.js";
+import { ipBucket, RateLimiter } from "../src/server/ratelimit.js";
 import { localDayHour } from "../src/server/main.js";
 import { s3Store } from "../src/storage.js";
 import { cleanText, esc, renderComment } from "../src/text.js";
@@ -182,6 +182,27 @@ describe("misc", () => {
     expect([rl.hit("a"), rl.hit("a"), rl.hit("a") > 0, rl.hit("b")]).toEqual([0, 0, true, 0]);
     t = 1001;
     expect(rl.hit("a")).toBe(0);
+  });
+  it("buckets IPv6 clients per /64 and IPv4-mapped addresses as IPv4", () => {
+    expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");
+    expect(ipBucket("::ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(ipBucket("2001:db8:1:2:3:4:5:6")).toBe("2001:db8:1:2::/64");
+    expect(ipBucket("2001:db8:1:2::9")).toBe("2001:db8:1:2::/64");
+    expect(ipBucket("2001:0db8:0001:0002:ffff::1")).toBe("2001:db8:1:2::/64");
+    expect(ipBucket("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(ipBucket("::1")).toBe("0:0:0:0::/64");
+    expect(ipBucket("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+    expect(ipBucket("?")).toBe("?");
+  });
+  it("keeps the limiter bounded without sweeping on every hit", () => {
+    let t = 0;
+    const rl = new RateLimiter(1, 1000, () => t, 3);
+    for (const k of ["a", "b", "c", "d"]) rl.hit(k);
+    expect(rl.size).toBe(3); // "a", the oldest, was dropped
+    expect(rl.hit("b")).toBeGreaterThan(0);
+    t = 2000;
+    rl.hit("e"); // one sweep: the expired windows go
+    expect(rl.size).toBe(1);
   });
   it("parses config and refuses unsafe SMTP", () => {
     expect(parseS3Url("s3://bucket/a/b/")).toEqual({ bucket: "bucket", prefix: "a/b/" });

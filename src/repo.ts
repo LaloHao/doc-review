@@ -370,6 +370,15 @@ export class Repo {
     });
   }
 
+  /** Comments (thread openings included) a director wrote since `since`. */
+  async countDirectorComments(directorId: number, since: Date): Promise<number> {
+    const [r] = await this.db.query<{ n: number }>(
+      "select count(*)::int as n from comments where director_id = $1 and created_at >= $2",
+      [directorId, since],
+    );
+    return r?.n ?? 0;
+  }
+
   async getComment(id: number): Promise<{
     id: number;
     thread_id: number;

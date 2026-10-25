@@ -113,4 +113,10 @@ alter table threads add column resolved_by_director_id integer references direct
 alter table sessions add column owner_fp text;
 `,
   },
+  {
+    name: "004_comments_by_director",
+    sql: `
+create index comments_director_created_idx on comments (director_id, created_at);
+`,
+  },
 ];
