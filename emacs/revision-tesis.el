@@ -117,10 +117,7 @@ Use it to regenerate avance.json, for example
 BODY is a unibyte string sent with CONTENT-TYPE."
   (let* ((cfg (revision-tesis--config))
          (url-request-method method)
-         (url-request-extra-headers
-          (append `(("Authorization" . ,(concat "Bearer " (cdr cfg)))
-                    ("Accept" . "application/json"))
-                  (when content-type `(("Content-Type" . ,content-type)))))
+         (url-request-extra-headers (revision-tesis--headers (cdr cfg) content-type))
          (url-request-data body)
          (buffer (url-retrieve-synchronously (concat (car cfg) path) t t revision-tesis-timeout)))
     (unless buffer (error "revision-tesis: sin respuesta de %s" (car cfg)))
@@ -136,6 +133,15 @@ BODY is a unibyte string sent with CONTENT-TYPE."
                          (buffer-substring-no-properties (point) (point-max)) 'utf-8))))
             (revision-tesis--handle-response status text)))
       (kill-buffer buffer))))
+
+(defun revision-tesis--headers (token &optional content-type)
+  "Request headers as unibyte strings.
+url.el refuses to send a request whose headers are multibyte (strings read
+from JSON are) together with a binary body."
+  (mapcar (lambda (h) (cons (car h) (encode-coding-string (cdr h) 'utf-8)))
+          (append `(("Authorization" . ,(concat "Bearer " token))
+                    ("Accept" . "application/json"))
+                  (when content-type `(("Content-Type" . ,content-type))))))
 
 (defun revision-tesis--handle-response (status text)
   "Return TEXT parsed as JSON, or signal the server's error for STATUS ≥ 400."
@@ -403,10 +409,17 @@ The file named after the thread's chapter id is tried first."
     (insert ":PROPERTIES:\n"
             (format ":REVISION_TESIS_ID: %s\n" (alist-get 'id thread))
             ":END:\n")
-    (when loc
-      (let ((rel (file-relative-name (nth 0 loc) root))
-            (line (revision-tesis--line-at (nth 0 loc) (nth 1 loc))))
-        (insert (format "Fuente: [[file:%s::%d][%s:%d]]\n" (nth 0 loc) line rel line))))
+    (if loc
+        (let ((rel (file-relative-name (nth 0 loc) root))
+              (line (revision-tesis--line-at (nth 0 loc) (nth 1 loc))))
+          (insert (format "Fuente: [[file:%s::%d][%s:%d]]\n" (nth 0 loc) line rel line)))
+      ;; Not anchored (a point comment, or text that changed): link the chapter file.
+      (let* ((chapter (alist-get 'id (alist-get 'chapter thread)))
+             (file (and chapter root
+                        (cl-find chapter (revision-tesis--org-files root)
+                                 :key #'file-name-base :test #'equal))))
+        (when file
+          (insert (format "Capítulo: [[file:%s][%s]]\n" file (file-relative-name file root))))))
     (insert (format "Web: [[%s][ver en el PDF]]\n"
                     (revision-tesis--clean-heading (alist-get 'url thread))))
     (unless (string-empty-p (or (alist-get 'quote thread) ""))
@@ -576,8 +589,7 @@ The file named after the thread's chapter id is tried first."
       (when cfg
         (setq revision-tesis--fetching t)
         (let ((url-request-method "GET")
-              (url-request-extra-headers `(("Authorization" . ,(concat "Bearer " (cdr cfg)))
-                                           ("Accept" . "application/json"))))
+              (url-request-extra-headers (revision-tesis--headers (cdr cfg))))
           (url-retrieve
            (concat (car cfg) "/api/threads?status=open")
            (lambda (status)

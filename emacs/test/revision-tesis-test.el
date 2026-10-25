@@ -143,6 +143,12 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
             (should (string-suffix-p "--BB--\r\n" body))))
       (delete-file pdf))))
 
+(ert-deftest revision-tesis-test-headers-unibyte ()
+  ;; Tokens come from JSON (multibyte strings); url.el needs unibyte headers.
+  (let ((h (revision-tesis--headers (decode-coding-string "rt_owner_x" 'utf-8) "application/json")))
+    (should (equal (cdr (assoc "Authorization" h)) "Bearer rt_owner_x"))
+    (should (cl-every (lambda (x) (not (multibyte-string-p (cdr x)))) h))))
+
 ;;; Commands with a mocked server
 
 (defmacro revision-tesis-test--mock (response &rest body)
@@ -160,7 +166,7 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
     (revision-tesis-test--mock
         `((threads . (,(revision-tesis-test--thread 1 3 "sin una revisión formal suficiente"
                                                     "Cite una fuente.\n[[elisp:(kill-emacs)]]" "01-introduccion")
-                      ,(revision-tesis-test--thread 2 9 "texto que ya no existe en las fuentes" "¿Y esto?"))))
+                      ,(revision-tesis-test--thread 2 9 "texto que ya no existe en las fuentes" "¿Y esto?" "01-introduccion"))))
       (let ((default-directory (expand-file-name "capitulos" root)))
         (revision-tesis-comentarios))
       (should (equal (cadr (car calls)) "/api/threads?status=open"))
@@ -174,6 +180,7 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
           ;; Untrusted text is literal (fixed-width), never an active link.
           (should (string-match-p "^  : \\[\\[elisp:(kill-emacs)\\]\\]$" text))
           (should (string-match-p "^\\* Sin ubicar en el código fuente$" text))
+          (should (string-match-p "Capítulo: \\[\\[file:.*/01-introduccion\\.org\\]" text))
           (should (< (string-search "Sin ubicar" text) (string-search "¿Y esto?" text))))
         (goto-char (point-min))
         (search-forward "Cite una fuente")

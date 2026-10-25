@@ -27,6 +27,9 @@ Autor (usa ~/.config/revision-tesis/config.json: {"url", "token"}, modo 0600):
   revision-tesis directors revoke ID
 `;
 
+const timeFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "short", timeStyle: "short" });
+const localTime = (iso: string) => timeFmt.format(new Date(iso));
+
 function fmtThread(t: ThreadJson): string {
   const lines = [
     `#${t.id} · v${t.version} p. ${t.page}${t.chapter ? ` · ${t.chapter.title}` : ""} · ${t.status === "open" ? "abierto" : "resuelto"}`,
@@ -34,7 +37,7 @@ function fmtThread(t: ThreadJson): string {
   if (t.quote) lines.push(`  «${t.quote.replace(/\s+/g, " ").slice(0, 200)}»`);
   for (const c of t.comments) {
     const body = c.deleted ? "(eliminado)" : (c.body ?? "").replace(/\n/g, "\n    ");
-    lines.push(`  ${c.author.name} (${c.created_at.slice(0, 16).replace("T", " ")}):`, `    ${body}`);
+    lines.push(`  ${c.author.name} (${localTime(c.created_at)}):`, `    ${body}`);
   }
   lines.push(`  ${t.url}`);
   return lines.join("\n");
