@@ -182,7 +182,10 @@ body.point-mode .textLayer span { cursor: crosshair; }
 @media (max-width: 900px) {
   .viewer-main { grid-template-columns: 1fr; }
   .threads { position: static; max-height: none; border-left: none; border-top: 1px solid var(--line); }
-  .viewer-bar { top: 3rem; }
+  /* Small screens: the bars scroll away instead of covering the page. */
+  nav.top, .viewer-bar { position: static; }
+  .viewer-bar { gap: 0.5rem; padding: 0.4rem 0.8rem; }
+  .viewer-bar .hint { display: none; }
   .page-number { display: none; }
   .link-input { min-width: 0; }
 }

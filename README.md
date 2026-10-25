@@ -151,7 +151,8 @@ OWNER_TOKEN_SHA256=<sha256> PUBLIC_URL=http://localhost:8080 node dist/cli.js se
 # data (PGlite + PDFs) goes to ./data
 ```
 
-Then put `{"url": "http://localhost:8080", "token": "<token>"}` in
+To have the `revision-tesis` command on your PATH: `pnpm link --global` (or call
+`node dist/cli.js`). Then put `{"url": "http://localhost:8080", "token": "<token>"}` in
 `~/.config/revision-tesis/config.json` (`chmod 600`) and:
 
 ```sh

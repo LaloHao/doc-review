@@ -102,8 +102,11 @@ if (last !== "/v/1") {
 const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 const m = await mctx.newPage();
 watch(m);
-await m.goto(DIRECTOR_LINK.replace(/\/acceso\/.*/, "/"));
-await m.screenshot({ path: out + "07-sin-sesion-movil.png" });
+await m.goto(DIRECTOR_LINK);
+await m.waitForSelector("body[data-ready='1']");
+await m.evaluate(() => document.querySelector(".page[data-page='3']").scrollIntoView());
+await m.waitForTimeout(500);
+await m.screenshot({ path: out + "07-movil.png" });
 
 await browser.close();
 if (errors.length) {

@@ -438,3 +438,51 @@ describe("HTML form posts with Referrer-Policy: no-referrer", () => {
     }
   });
 });
+
+describe("daily digest and the owner client", () => {
+  it("sends the digest once per local day, after DIGEST_HOUR", async () => {
+    const { runDigest } = await import("../src/server/main.js");
+    const { loadConfig } = await import("../src/config.js");
+    const { Notifier } = await import("../src/notify/notify.js");
+    const sent: string[] = [];
+    const notifier = new Notifier({
+      publicUrl: ORIGIN,
+      thesisTitle: async () => "T",
+      telegram: { send: async (t) => void sent.push(t) },
+      mailer: null,
+      ownerEmail: "",
+      instant: false,
+      log: () => undefined,
+    });
+    const config = loadConfig({ DIGEST_HOUR: "8", TZ: "America/Mexico_City" });
+    const now = new Date(); // comments in this test file were written moments ago
+    const local = (h: number) => {
+      // A time today (Mexico City) at hour h; the test only needs "before"/"after".
+      const d = new Date(now);
+      d.setUTCHours(h + 6, 30, 0, 0);
+      return d;
+    };
+    expect(await runDigest(config, s.repo, notifier, local(7))).toBe(false); // before 8:00
+    const at9 = local(9);
+    await s.repo.db.query("delete from digest_runs");
+    // Pretend the comments were written in the 24 h before 9:00.
+    await s.repo.db.query("update comments set created_at = $1", [new Date(at9.getTime() - 3600_000)]);
+    expect(await runDigest(config, s.repo, notifier, at9)).toBe(true);
+    expect(sent[0]).toMatch(/Resumen diario: \d+ comentario/);
+    expect(await runDigest(config, s.repo, notifier, new Date(at9.getTime() + 3600_000))).toBe(false); // same day
+  });
+
+  it("the CLI client publishes and lists with the owner token", async () => {
+    const { Client } = await import("../src/client.js");
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(s.dir, "t.pdf"), sampleThesis(true));
+    await writeFile(join(s.dir, "a.json"), JSON.stringify(sampleAvance(true)));
+    const client = new Client({ url: s.url, token: OWNER_TOKEN });
+    const r = await client.publish(join(s.dir, "t.pdf"), join(s.dir, "a.json"), "desde el cliente");
+    expect(r.version.number).toBe(3);
+    const { threads } = await client.threads({ status: "all" });
+    expect(threads.length).toBeGreaterThan(0);
+    await expect(new Client({ url: s.url, token: "nope" }).threads({})).rejects.toThrow(/Token no válido/);
+  });
+});

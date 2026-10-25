@@ -174,6 +174,12 @@ function mergeRects(rects) {
 }
 
 document.addEventListener("mouseup", () => setTimeout(updateSelectionButton, 0));
+// Touch screens select text without mouseup: follow the selection itself.
+let selTimer = 0;
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selTimer);
+  selTimer = setTimeout(updateSelectionButton, 300);
+});
 document.addEventListener("keyup", (e) => {
   if (e.shiftKey) updateSelectionButton();
 });
