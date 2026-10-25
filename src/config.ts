@@ -34,6 +34,8 @@ export interface Config {
   databaseUrl: string;
   /** DSN used to run migrations (the CNPG `<app>_admin` role); defaults to databaseUrl. */
   databaseAdminUrl: string;
+  /** Run migrations at startup; false = a separate job does (the app only checks). */
+  migrateOnStart: boolean;
   storage: StorageConfig;
   /** SHA-256 (hex) of the owner token. Empty = owner access disabled. */
   ownerTokenSha256: string;
@@ -158,6 +160,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     origin,
     databaseUrl,
     databaseAdminUrl: str(env, "DATABASE_ADMIN_URL", databaseUrl),
+    migrateOnStart: bool(env, "MIGRATE_ON_START", true),
     storage,
     ownerTokenSha256,
     ownerName: str(env, "OWNER_NAME", "Eduardo Ejemplo"),

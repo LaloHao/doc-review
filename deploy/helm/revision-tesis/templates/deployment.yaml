@@ -30,15 +30,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "revision-tesis.podSecurityContext" . | nindent 8 }}
       containers:
         - name: app
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "revision-tesis.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["serve"]
           ports:
@@ -59,10 +54,7 @@ spec:
                 name: {{ .Values.storage.s3.credentialsSecret }}
             {{- end }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+            {{- include "revision-tesis.containerSecurityContext" . | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /healthz

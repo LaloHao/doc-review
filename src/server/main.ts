@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { describeConfig, directorDigestHour, type Config } from "../config.js";
-import { migrate, openDb, type Db } from "../db/db.js";
+import { migrate, openDb, pendingMigrations, type Db } from "../db/db.js";
 import { Notifier, smtpMailer, telegramClient, type Mailer, type Telegram } from "../notify/notify.js";
 import { ownerSessionFingerprint, Repo } from "../repo.js";
 import { openStore, type BlobStore } from "../storage.js";
@@ -91,6 +91,15 @@ export async function runDirectorDigests(
 export async function startServer(config: Config, opts: StartOptions = {}): Promise<Running> {
   const log = opts.log ?? ((m: string) => console.log(m));
   let db = opts.db;
+  if (!db && !config.migrateOnStart) {
+    // Migrations ran elsewhere (the chart's hook Job, with the admin role).
+    db = await openDb(config.databaseUrl);
+    const pending = await pendingMigrations(db);
+    if (pending.length) {
+      await db.close();
+      throw new Error(`pending migrations: ${pending.join(", ")} (run revision-tesis migrate with DATABASE_ADMIN_URL)`);
+    }
+  }
   if (!db) {
     if (config.databaseAdminUrl !== config.databaseUrl) {
       const admin = await openDb(config.databaseAdminUrl);

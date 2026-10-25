@@ -101,3 +101,11 @@ export async function migrate(db: Db): Promise<string[]> {
   }
   return applied;
 }
+
+/** Names of the migrations not applied yet (all of them on an empty database). */
+export async function pendingMigrations(db: Queryable): Promise<string[]> {
+  const [t] = await db.query<{ t: string | null }>("select to_regclass('schema_migrations')::text as t");
+  if (!t?.t) return MIGRATIONS.map((m) => m.name);
+  const done = new Set((await db.query<{ name: string }>("select name from schema_migrations")).map((r) => r.name));
+  return MIGRATIONS.filter((m) => !done.has(m.name)).map((m) => m.name);
+}

@@ -233,6 +233,24 @@ describe("misc", () => {
     expect(() => loadConfig({ OWNER_TOKEN_SHA256: "abc" })).toThrow(/64 hex/);
     expect(loadConfig({}).telegram).toBeNull();
   });
+  it("with MIGRATE_ON_START=false the server refuses to start on a database with pending migrations", async () => {
+    const { startServer } = await import("../src/server/main.js");
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const dir = await mkdtemp(join(tmpdir(), "rt-migrate-"));
+    try {
+      const env = { PORT: "0", HOST: "127.0.0.1", DATABASE_URL: `pglite:${dir}/db`, STORAGE_DIR: join(dir, "f"), MIGRATE_ON_START: "false" };
+      await expect(startServer(loadConfig(env), { mailer: null, telegram: null, log: () => undefined })).rejects.toThrow(/pending migrations: 001_initial/);
+      const { migrate, openDb, pendingMigrations } = await import("../src/db/db.js");
+      const db = await openDb(`pglite:${dir}/db`);
+      await migrate(db);
+      expect(await pendingMigrations(db)).toEqual([]);
+      await db.close();
+      const s = await startServer(loadConfig(env), { mailer: null, telegram: null, log: () => undefined });
+      await s.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("computes the local day and hour", () => {
     expect(localDayHour(new Date("2026-10-24T05:30:00Z"), "America/Mexico_City")).toEqual({ day: "2026-10-23", hour: 23 });
   });

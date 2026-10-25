@@ -5,7 +5,10 @@
 
 image:
   repository: ghcr.io/lalohao/revision-tesis
-  tag: latest
+  # "" = the chart's appVersion (an immutable release tag, pushed by CI for each
+  # v* git tag). In the cluster, set the commit tag (<sha>) of the image to run.
+  tag: ""
+  # Tags are immutable: no need to pull on every start.
   pullPolicy: IfNotPresent
 
 # e.g. [{name: ghcr-pull-secret}] for a private copy of the image.
@@ -16,10 +19,9 @@ imagePullSecrets: []
 publicUrl: ""
 
 # Name of an existing Secret (never created by this chart) whose keys become
-# environment variables. Expected keys:
+# environment variables of the app. Expected keys:
 #   OWNER_TOKEN_SHA256            sha256 of the owner token (revision-tesis gen-token)
 #   DATABASE_URL                  postgres://<app role>@…  (runtime)
-#   DATABASE_ADMIN_URL            postgres://<admin role>@… (migrations at startup)
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   (optional)
 #   SMTP_PASSWORD                 (optional; a Proton Mail SMTP token, for example)
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   (when storage.type is s3, unless
@@ -38,6 +40,8 @@ config:
   digestHour: ""
   # Owner address for email notifications ("" = none).
   ownerEmail: ""
+  # Threads + replies per director in 24 hours (0 = no cap).
+  maxDirectorCommentsPerDay: 500
   smtp:
     host: ""            # e.g. smtp.protonmail.ch
     port: 587
@@ -62,18 +66,63 @@ storage:
     storageClassName: ""
     existingClaim: ""
 
-# Database. "postgres": DATABASE_URL/DATABASE_ADMIN_URL from envSecretName (the
-# cluster's CloudNativePG). "embedded": PGlite on the /data volume (single pod, no
-# database server; needs the PVC).
+# Database. "postgres": DATABASE_URL from envSecretName (the cluster's
+# CloudNativePG). "embedded": PGlite on the /data volume (single pod, no
+# database server; needs the PVC; migrations run at startup).
 database:
   type: postgres
+
+# Migrations (database.type postgres): a Helm hook Job (pre-install,
+# pre-upgrade) runs `revision-tesis migrate` with the admin role, whose DSN is
+# only in adminSecretName; the app pod gets DATABASE_URL (the app role) only,
+# and refuses to start if a migration is pending.
+migrations:
+  job: true
+  # Existing Secret with the admin role's DSN (postgres://<app>_admin@…).
+  adminSecretName: ""
+  adminSecretKey: DATABASE_ADMIN_URL
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+
+# Network isolation. Only enforced by CNIs that implement NetworkPolicy (Cilium,
+# Calico, kube-router…; Flannel alone does not). Ingress: only from the
+# namespace (and optionally pods) of cloudflared. Egress: DNS, Postgres, and
+# HTTPS/SMTP to the internet (S3/R2, Telegram, the SMTP server); private ranges
+# are excluded from the internet rule.
+networkPolicy:
+  enabled: false
+  ingressFrom:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: platform
+    podSelector: {}
+  egress:
+    dns:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      ports: [53]
+    postgres:
+      enabled: true
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: postgres
+      port: 5432
+    internet:
+      # S3/R2 and Telegram (443), SMTP (465, 587).
+      ports: [443, 465, 587]
+      cidr: 0.0.0.0/0
+      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+  # More NetworkPolicy egress rules, as is.
+  extraEgress: []
 
 resources:
   requests:
     cpu: 50m
     memory: 192Mi
   limits:
-    # Parsing a 50 MB PDF with pdf.js needs headroom.
+    # Parsing a 50 MB PDF needs headroom: the parser runs in a worker thread
+    # capped at 512 MB of heap, next to the server's own.
     memory: 1Gi
 
 podAnnotations: {}

@@ -1,0 +1,62 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- with .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}
+  labels:
+    {{- include "revision-tesis.labels" $ | nindent 4 }}
+spec:
+  # The app pods only (the migration Job's pods have other labels).
+  podSelector:
+    matchLabels:
+      {{- include "revision-tesis.selector" $ | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the Cloudflare tunnel reaches the app.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .ingressFrom.namespaceSelector | nindent 12 }}
+          {{- with .ingressFrom.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .egress.dns.namespaceSelector | nindent 12 }}
+      ports:
+        {{- range .egress.dns.ports }}
+        - port: {{ . }}
+          protocol: UDP
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- if .egress.postgres.enabled }}
+    - to:
+        - namespaceSelector:
+            {{- toYaml .egress.postgres.namespaceSelector | nindent 12 }}
+      ports:
+        - port: {{ .egress.postgres.port }}
+          protocol: TCP
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: {{ .egress.internet.cidr }}
+            {{- with .egress.internet.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        {{- range .egress.internet.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- with .extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
