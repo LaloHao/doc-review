@@ -346,7 +346,9 @@ describe("comments", () => {
     const rows = await s.repo.db.query("select deleted_at from comments where id = $1", [comment_id]);
     expect(rows).toHaveLength(1);
     await settle();
-    expect(s.telegrams.length).toBe(before); // owner replies/edits/deletes don't notify
+    // The codirector's edit notifies the owner (once); deletes don't notify.
+    expect(s.telegrams.slice(before)).toHaveLength(1);
+    expect(s.telegrams.at(-1)).toContain("Dr. Luis Méndez Ortega editó un comentario");
   });
 
   it("only the opener or the owner can resolve; anyone who sees the thread can reopen", async () => {

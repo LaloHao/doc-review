@@ -43,6 +43,7 @@ nav.top {
 }
 nav.top .brand { font-weight: 600; text-decoration: none; color: var(--fg); margin-right: auto; }
 nav.top .who { color: var(--muted); font-size: 0.9rem; }
+nav.top .nav-link { font-size: 0.9rem; }
 
 main.narrow { max-width: 34rem; margin: 3rem auto; padding: 0 1rem; }
 main.wide { max-width: 72rem; margin: 1rem auto 4rem; padding: 0 1rem; }

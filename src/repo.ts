@@ -8,12 +8,17 @@ import { renderComment } from "./text.js";
 
 export type AuthorKind = "owner" | "director";
 
+/** When a director hears about replies in their threads. */
+export type ReplyNotify = "instant" | "daily" | "never";
+export const REPLY_NOTIFY: readonly ReplyNotify[] = ["instant", "daily", "never"];
+
 export interface Director {
   id: number;
   name: string;
   role: string;
   email: string | null;
   notify_versions: boolean;
+  notify_replies: ReplyNotify;
   created_at: Date;
   rotated_at: Date | null;
   revoked_at: Date | null;
@@ -25,6 +30,8 @@ export interface Session {
   director: Director | null;
   csrf: string;
   idHash: string;
+  /** The expiry was just extended: the cookie's Max-Age should be too. */
+  refreshed?: boolean;
 }
 
 export interface Version {
@@ -86,7 +93,7 @@ export interface ThreadOut {
 export type Visibility = "all" | "own";
 
 const DIRECTOR_COLS =
-  "id, name, role, email, notify_versions, created_at, rotated_at, revoked_at, last_seen_at";
+  "id, name, role, email, notify_versions, notify_replies, created_at, rotated_at, revoked_at, last_seen_at";
 
 const iso = (d: Date | string | null | undefined): string | null =>
   d === null || d === undefined ? null : new Date(d).toISOString();
@@ -111,12 +118,13 @@ export class Repo {
     role: string;
     email: string | null;
     notify_versions: boolean;
+    notify_replies?: ReplyNotify;
   }): Promise<{ director: Director; secret: string }> {
     const secret = newSecret(32);
     const [director] = await this.db.query<Director>(
-      `insert into directors (name, role, email, notify_versions, token_hash)
-       values ($1, $2, $3, $4, $5) returning ${DIRECTOR_COLS}`,
-      [input.name, input.role, input.email, input.notify_versions, sha256Hex(secret)],
+      `insert into directors (name, role, email, notify_versions, notify_replies, token_hash)
+       values ($1, $2, $3, $4, $5, $6) returning ${DIRECTOR_COLS}`,
+      [input.name, input.role, input.email, input.notify_versions, input.notify_replies ?? "never", sha256Hex(secret)],
     );
     return { director: director!, secret };
   }
@@ -132,15 +140,15 @@ export class Repo {
 
   async updateDirector(
     id: number,
-    patch: Partial<Pick<Director, "name" | "role" | "email" | "notify_versions">>,
+    patch: Partial<Pick<Director, "name" | "role" | "email" | "notify_versions" | "notify_replies">>,
   ): Promise<Director | null> {
     const cur = await this.getDirector(id);
     if (!cur) return null;
     const next = { ...cur, ...patch };
     const [d] = await this.db.query<Director>(
-      `update directors set name = $2, role = $3, email = $4, notify_versions = $5
+      `update directors set name = $2, role = $3, email = $4, notify_versions = $5, notify_replies = $6
        where id = $1 returning ${DIRECTOR_COLS}`,
-      [id, next.name, next.role, next.email, next.notify_versions],
+      [id, next.name, next.role, next.email, next.notify_versions, next.notify_replies],
     );
     return d ?? null;
   }
@@ -220,14 +228,16 @@ export class Repo {
       if (!director || director.revoked_at) return null;
     }
     // Sliding expiry, written at most once an hour.
+    let refreshed = false;
     if (Date.now() - new Date(s.last_seen_at).getTime() > 3600_000) {
+      refreshed = true;
       await this.db.query("update sessions set last_seen_at = now(), expires_at = $2 where id_hash = $1", [
         idHash,
         new Date(Date.now() + slideFor(s.kind)),
       ]);
       if (director) await this.db.query("update directors set last_seen_at = now() where id = $1", [director.id]);
     }
-    return { kind: s.kind, director, csrf: s.csrf_token, idHash };
+    return { kind: s.kind, director, csrf: s.csrf_token, idHash, refreshed };
   }
 
   async deleteSession(idHash: string): Promise<void> {
@@ -396,8 +406,26 @@ export class Repo {
     return c ?? null;
   }
 
-  async editComment(id: number, body: string): Promise<void> {
-    await this.db.query("update comments set body = $2, edited_at = now() where id = $1 and deleted_at is null", [id, body]);
+  /** Edits a comment, keeping its previous text (the last 20 versions). Returns the previous text. */
+  async editComment(id: number, body: string): Promise<string | null> {
+    return this.db.tx(async (q) => {
+      const [cur] = await q.query<{ body: string }>("select body from comments where id = $1 and deleted_at is null for update", [id]);
+      if (!cur) return null;
+      if (cur.body === body) return cur.body;
+      await q.query("insert into comment_edits (comment_id, body) values ($1, $2)", [id, cur.body]);
+      await q.query(
+        `delete from comment_edits where comment_id = $1 and id not in
+         (select id from comment_edits where comment_id = $1 order by id desc limit 20)`,
+        [id],
+      );
+      await q.query("update comments set body = $2, edited_at = now() where id = $1", [id, body]);
+      return cur.body;
+    });
+  }
+
+  /** Previous texts of a comment, newest first. */
+  commentEdits(id: number): Promise<{ body: string; edited_at: Date }[]> {
+    return this.db.query("select body, edited_at from comment_edits where comment_id = $1 order by id desc", [id]);
   }
 
   /** Soft delete: the row stays (the thread keeps its shape), the text is hidden. */
@@ -532,13 +560,53 @@ export class Repo {
     return r?.number ?? null;
   }
 
-  // --- digest bookkeeping ---
-
-  /** Marks the digest of `day` as sent; false if it already was. */
-  async claimDigest(day: string): Promise<boolean> {
-    const rows = await this.db.query("insert into digest_runs (day) values ($1) on conflict do nothing returning day", [day]);
-    return rows.length > 0;
+  /**
+   * What a director hasn't heard about: comments by others since `since`, in the
+   * threads they opened or replied to, as that director sees them (visibility
+   * setting included).
+   */
+  async directorUpdates(directorId: number, since: Date): Promise<{ thread: ThreadOut; comment: CommentOut }[]> {
+    const threads = await this.listThreads({ kind: "director", directorId }, { since });
+    return threads.flatMap((t) =>
+      participates(t, directorId)
+        ? t.comments
+            .filter((c) => !c.deleted && !isBy(c, directorId) && Date.parse(c.created_at) >= since.getTime())
+            .map((comment) => ({ thread: t, comment }))
+        : [],
+    );
   }
+
+  // --- digest bookkeeping (a day is marked only after its digest went out) ---
+
+  async digestDone(day: string): Promise<boolean> {
+    return (await this.db.query("select 1 from digest_runs where day = $1", [day])).length > 0;
+  }
+
+  async markDigest(day: string): Promise<void> {
+    await this.db.query("insert into digest_runs (day) values ($1) on conflict do nothing", [day]);
+  }
+
+  async directorDigestDone(directorId: number, day: string): Promise<boolean> {
+    return (await this.db.query("select 1 from director_digest_runs where director_id = $1 and day = $2", [directorId, day])).length > 0;
+  }
+
+  async markDirectorDigest(directorId: number, day: string): Promise<void> {
+    await this.db.query("insert into director_digest_runs (director_id, day) values ($1, $2) on conflict do nothing", [directorId, day]);
+  }
+
+  /** When the director's last digest went out. */
+  async lastDirectorDigest(directorId: number): Promise<Date | null> {
+    const [r] = await this.db.query<{ at: Date | null }>("select max(sent_at) as at from director_digest_runs where director_id = $1", [directorId]);
+    return r?.at ? new Date(r.at) : null;
+  }
+}
+
+const isBy = (c: { author: { kind: AuthorKind; director_id: number | null } }, directorId: number) =>
+  c.author.kind === "director" && c.author.director_id === directorId;
+
+/** A director takes part in a thread they opened or replied to. */
+export function participates(t: ThreadOut, directorId: number): boolean {
+  return isBy(t, directorId) || t.comments.some((c) => isBy(c, directorId));
 }
 
 export type { Queryable };

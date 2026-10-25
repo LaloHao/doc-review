@@ -1,11 +1,12 @@
 // Notifications. Channels are independent: Telegram (owner), email to the owner,
-// and opt-in email to directors when a new version is published. Each one is off
-// unless configured. Messages never carry secrets: links point to the public URL,
-// and a director's personal link goes by email only when the owner asks for it.
-// Failures are logged (without credentials) and never break the request.
+// and opt-in emails to directors (a new version; replies in their threads, at
+// once or as a daily digest). Each one is off unless configured. Messages never
+// carry secrets: links point to the public URL, and a director's personal link
+// goes by email only when the owner asks for it. Failures are logged (without
+// credentials) and never break the request.
 
 import type { Config } from "../config.js";
-import type { Director, ThreadOut, Version } from "../repo.js";
+import type { CommentOut, Director, ThreadOut, Version } from "../repo.js";
 import { excerpt } from "../text.js";
 
 /** Names and titles: one line, without control or bidi characters. */
@@ -96,6 +97,12 @@ function commentText(t: ThreadOut, commentId: number, publicUrl: string): { titl
   return { title, body: lines.join("\n") };
 }
 
+const directorFooter = [
+  "",
+  "Si el sitio le pide entrar, use su enlace personal (el que recibió por separado).",
+  "Puede cambiar o desactivar estos avisos en «Notificaciones», en la página de la tesis.",
+];
+
 export class Notifier {
   constructor(private readonly d: NotifierDeps) {}
 
@@ -111,12 +118,15 @@ export class Notifier {
     (this.d.log ?? console.error)(msg);
   }
 
-  private async toOwner(subject: string, text: string): Promise<void> {
+  /** Sends on every owner channel; returns how many succeeded and failed. */
+  private async toOwner(subject: string, text: string): Promise<{ ok: number; failed: number }> {
     const jobs: Promise<void>[] = [];
     if (this.d.telegram) jobs.push(this.d.telegram.send(text));
     if (this.d.mailer && this.d.ownerEmail) jobs.push(this.d.mailer.send({ to: this.d.ownerEmail, subject, text }));
     const results = await Promise.allSettled(jobs);
     for (const r of results) if (r.status === "rejected") this.log(`notification failed: ${(r.reason as Error).message}`);
+    const failed = results.filter((r) => r.status === "rejected").length;
+    return { ok: results.length - failed, failed };
   }
 
   /** A director wrote a comment or reply. Owner-authored comments don't notify. */
@@ -128,14 +138,38 @@ export class Notifier {
     await this.toOwner(`[Revisión de tesis] ${title}`, body);
   }
 
-  /** Daily summary of what directors wrote since `since`. */
-  async digest(threads: ThreadOut[], since: Date): Promise<boolean> {
+  /** A director edited a comment: the owner sees what changed. */
+  async commentEdited(thread: ThreadOut, commentId: number, previous: string): Promise<void> {
+    if (!this.d.instant) return;
+    const c = thread.comments.find((x) => x.id === commentId);
+    if (!c || c.author.kind === "owner") return;
+    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.chapter ? name(thread.chapter.title) : null].filter(Boolean).join(", ");
+    const title = `${name(c.author.name)} editó un comentario`;
+    const text = [
+      `${title} (${where})`,
+      "",
+      "Antes:",
+      excerpt(previous, 1000),
+      "",
+      "Ahora:",
+      excerpt(c.body ?? "", 1500),
+      "",
+      threadUrl(this.d.publicUrl, thread),
+    ].join("\n");
+    await this.toOwner(`[Revisión de tesis] ${title}`, text);
+  }
+
+  /**
+   * Daily summary of what directors wrote since `since`. "failed" when every
+   * channel failed (the caller retries later); "empty" when there was nothing.
+   */
+  async digest(threads: ThreadOut[], since: Date): Promise<"sent" | "empty" | "failed"> {
     const items = threads.flatMap((t) =>
       t.comments
         .filter((c) => c.author.kind === "director" && !c.deleted && Date.parse(c.created_at) >= since.getTime())
         .map((c) => ({ t, c })),
     );
-    if (items.length === 0) return false;
+    if (items.length === 0) return "empty";
     const lines = [`Resumen diario: ${items.length} comentario(s) nuevo(s) de tus directores.`, ""];
     for (const { t, c } of items.slice(0, 50)) {
       lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.chapter ? `, ${name(t.chapter.title)}` : ""}`);
@@ -143,7 +177,54 @@ export class Notifier {
       lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
     }
     if (items.length > 50) lines.push(`… y ${items.length - 50} más.`);
-    await this.toOwner(`[Revisión de tesis] Resumen: ${items.length} comentario(s)`, lines.join("\n"));
+    const r = await this.toOwner(`[Revisión de tesis] Resumen: ${items.length} comentario(s)`, lines.join("\n"));
+    return r.failed > 0 && r.ok === 0 ? "failed" : "sent";
+  }
+
+  /** Someone else replied in a thread a director takes part in (no secret link). */
+  async replyToDirector(director: Director, thread: ThreadOut, comment: CommentOut): Promise<void> {
+    if (!this.d.mailer || !director.email) return;
+    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.chapter ? name(thread.chapter.title) : null].filter(Boolean).join(", ");
+    await this.d.mailer.send({
+      to: director.email,
+      subject: `[Revisión de tesis] Respuesta de ${name(comment.author.name)}`,
+      text: [
+        `Estimado(a) ${name(director.name)}:`,
+        "",
+        `${name(comment.author.name)} respondió en un hilo en el que usted participa (${where}).`,
+        thread.quote ? `«${excerpt(thread.quote, 200)}»` : null,
+        "",
+        excerpt(comment.body ?? "", 1500),
+        "",
+        `Ver el hilo: ${threadUrl(this.d.publicUrl, thread)}`,
+        ...directorFooter,
+      ]
+        .filter((l) => l !== null)
+        .join("\n"),
+    });
+  }
+
+  /** A director's daily digest of replies. Throws if the email can't be sent. */
+  async directorDigest(director: Director, items: { thread: ThreadOut; comment: CommentOut }[]): Promise<boolean> {
+    if (!this.d.mailer || !director.email || items.length === 0) return false;
+    const lines = [
+      `Estimado(a) ${name(director.name)}:`,
+      "",
+      `Hay ${items.length} respuesta(s) nueva(s) en hilos en los que usted participa.`,
+      "",
+    ];
+    for (const { thread: t, comment: c } of items.slice(0, 50)) {
+      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.chapter ? `, ${name(t.chapter.title)}` : ""}`);
+      lines.push(`  ${excerpt(c.body ?? "", 300)}`);
+      lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
+    }
+    if (items.length > 50) lines.push(`… y ${items.length - 50} más.`);
+    lines.push(...directorFooter);
+    await this.d.mailer.send({
+      to: director.email,
+      subject: `[Revisión de tesis] Resumen: ${items.length} respuesta(s)`,
+      text: lines.join("\n"),
+    });
     return true;
   }
 

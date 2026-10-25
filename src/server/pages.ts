@@ -3,7 +3,7 @@
 
 import type { Avance } from "../avance.js";
 import type { VersionDiff } from "../diff.js";
-import type { Director, Version, Visibility } from "../repo.js";
+import type { Director, ReplyNotify, Version, Visibility } from "../repo.js";
 import { esc } from "../text.js";
 
 export interface Layout {
@@ -37,6 +37,7 @@ export function page(l: Layout, body: string): string {
     ? `<nav class="top">
         <a class="brand" href="/">Revisión de tesis</a>
         <span class="who">${esc(l.who.name)}${l.who.kind === "owner" ? " · autor" : ""}</span>
+        ${l.who.kind === "director" ? `<a href="/notificaciones" class="nav-link">Notificaciones</a>` : ""}
         <form method="post" action="/salir" class="inline">
           <input type="hidden" name="_csrf" value="${esc(l.csrf ?? "")}">
           <button type="submit" class="link">Salir</button>
@@ -80,6 +81,46 @@ export function switchIdentityPage(current: string, next: string, secret: string
         <button type="submit">Entrar como ${esc(next)}</button>
         <a href="/">Seguir como ${esc(current)}</a>
       </form>
+    </main>`,
+  );
+}
+
+const REPLY_LABEL: Record<ReplyNotify, string> = {
+  instant: "Al momento",
+  daily: "Resumen diario",
+  never: "Nunca",
+};
+
+export function notificationsPage(
+  l: Layout,
+  input: { replies: ReplyNotify; versions: boolean; email: string | null; mailEnabled: boolean; digestTime: string; saved: boolean },
+): string {
+  const radio = (v: ReplyNotify, extra = "") =>
+    `<label class="check"><input type="radio" name="replies" value="${v}"${input.replies === v ? " checked" : ""}> ${REPLY_LABEL[v]}${extra}</label>`;
+  const where = !input.mailEnabled
+    ? `<p class="muted">El servidor todavía no tiene el correo activado: estos ajustes se aplicarán cuando lo tenga.</p>`
+    : input.email
+      ? `<p>Los avisos llegan a <strong>${esc(input.email)}</strong>.</p>`
+      : `<p class="muted">No hay un correo registrado para usted: pida al autor de la tesis que lo agregue para recibir avisos.</p>`;
+  return page(
+    l,
+    `<main class="narrow">
+      <h1>Notificaciones</h1>
+      ${input.saved ? `<p class="plus" role="status">Guardado.</p>` : ""}
+      ${where}
+      <form method="post" action="/notificaciones" class="stack">
+        <input type="hidden" name="_csrf" value="${esc(l.csrf ?? "")}">
+        <fieldset>
+          <legend>Cuando alguien responda en un hilo que usted abrió o en el que respondió</legend>
+          ${radio("instant", " (un correo por respuesta)")}
+          ${radio("daily", ` (un correo al día, a las ${esc(input.digestTime)}, si hubo respuestas)`)}
+          ${radio("never")}
+        </fieldset>
+        <label class="check"><input type="checkbox" name="versions" value="1"${input.versions ? " checked" : ""}> Avisarme cuando se publique una versión nueva</label>
+        <button type="submit">Guardar</button>
+      </form>
+      <p class="muted small">Los correos traen un enlace al hilo, nunca su enlace personal; si el sitio le pide entrar, use su enlace personal.</p>
+      <p><a href="/">Volver a la tesis</a></p>
     </main>`,
   );
 }
@@ -259,7 +300,12 @@ export function ownerDashboard(
     .map(
       (d) => `<tr data-id="${d.id}">
         <td>${esc(d.name)}<div class="muted small">${esc(d.role)}</div></td>
-        <td>${d.email ? esc(d.email) : `<span class="muted">—</span>`}${d.notify_versions ? `<div class="small">avisos de versión</div>` : ""}</td>
+        <td>${d.email ? esc(d.email) : `<span class="muted">—</span>`}${d.notify_versions ? `<div class="small">avisos de versión</div>` : ""}
+          <label class="small">Respuestas
+            <select data-action="notify-replies" data-id="${d.id}" aria-label="Avisos de respuestas a ${esc(d.name)}">
+              ${(["instant", "daily", "never"] as const).map((v) => `<option value="${v}"${d.notify_replies === v ? " selected" : ""}>${REPLY_LABEL[v]}</option>`).join("")}
+            </select>
+          </label></td>
         <td>${d.revoked_at ? `<span class="tag tag-revoked">Revocado</span>` : `<span class="tag tag-terminado">Activo</span>`}</td>
         <td class="small">${d.last_seen_at ? esc(fmtDate(d.last_seen_at)) : `<span class="muted">nunca</span>`}</td>
         <td class="actions">

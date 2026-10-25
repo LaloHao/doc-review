@@ -16,11 +16,11 @@ import { createRequire } from "node:module";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateAvance, ValidationError } from "../avance.js";
-import type { Config } from "../config.js";
+import { directorDigestHour, type Config } from "../config.js";
 import { diffVersions, locateChapters, type VersionDiff } from "../diff.js";
 import type { Notifier } from "../notify/notify.js";
 import { extractPdf, PdfError } from "../pdf/extract.js";
-import type { Rect, Repo, Session, Version, Viewer, Visibility } from "../repo.js";
+import { participates, REPLY_NOTIFY, type Rect, type ReplyNotify, type Repo, type Session, type Version, type Viewer, type Visibility } from "../repo.js";
 import type { BlobStore } from "../storage.js";
 import { newSecret, safeEqual, sha256Hex } from "./crypto.js";
 import {
@@ -165,6 +165,11 @@ function parseRects(v: unknown): Rect[] {
   });
 }
 
+function replyNotify(v: unknown): ReplyNotify {
+  if (!REPLY_NOTIFY.includes(v as ReplyNotify)) throw new HttpError(400, "notify_replies: instant, daily o never.");
+  return v as ReplyNotify;
+}
+
 function isEmail(s: string): boolean {
   return /^[^\s@<>"',;]+@[^\s@<>"',;]+\.[^\s@<>"',;]+$/.test(s) && s.length <= 320;
 }
@@ -288,17 +293,37 @@ export function createApp(deps: AppDeps) {
     return t;
   };
 
-  const notifyComment = (threadId: number, commentId: number) => {
-    // After the response: notifications never delay or fail a request.
+  /** After the response: notifications never delay or fail a request. */
+  const later = (fn: () => Promise<void>) =>
     setImmediate(async () => {
       try {
-        const [t] = await repo.listThreads({ kind: "owner", directorId: null }, { threadId });
-        if (t) await notifier.commentCreated(t, commentId);
+        await fn();
       } catch (e) {
         log(`notify error: ${(e as Error).message}`);
       }
     });
-  };
+
+  const notifyComment = (threadId: number, commentId: number) =>
+    later(async () => {
+      const [t] = await repo.listThreads({ kind: "owner", directorId: null }, { threadId });
+      if (!t) return;
+      await notifier.commentCreated(t, commentId);
+      if (t.comments[0]?.id === commentId || !notifier.enabled.directorEmail) return; // a new thread, not a reply
+      // Directors who chose instant reply emails and take part in the thread,
+      // as each of them sees it: a comment they can't see never notifies them.
+      for (const d of await repo.listDirectors()) {
+        if (d.notify_replies !== "instant" || !d.email || d.revoked_at) continue;
+        const [mine] = await repo.listThreads({ kind: "director", directorId: d.id }, { threadId });
+        const c = mine?.comments.find((x) => x.id === commentId);
+        if (!mine || !c || (c.author.kind === "director" && c.author.director_id === d.id) || !participates(mine, d.id)) continue;
+        try {
+          await notifier.replyToDirector(d, mine, c);
+          log(`reply notification emailed to director #${d.id}`);
+        } catch (e) {
+          log(`reply email failed for director #${d.id}: ${(e as Error).message}`);
+        }
+      }
+    });
 
   // --- public routes ---
 
@@ -462,6 +487,35 @@ export function createApp(deps: AppDeps) {
     html(c.res, 200, pages.changesPage(layout(c, `Versión ${v.number}: cambios`), v, prev, await diffFor(v)));
   });
 
+  // A director's own notification settings (a plain form: works without JS).
+  const notificationsPage = (c: Ctx, saved: boolean) => {
+    const d = c.session!.director!;
+    return pages.notificationsPage(layout(c, "Notificaciones"), {
+      replies: d.notify_replies,
+      versions: d.notify_versions,
+      email: d.email,
+      mailEnabled: notifier.enabled.directorEmail,
+      digestTime: `${directorDigestHour(config)}:00`,
+      saved,
+    });
+  };
+
+  route("GET", "/notificaciones", async (c) => {
+    if (requireAny(c).kind !== "director") return redirect(c.res, "/");
+    html(c.res, 200, notificationsPage(c, c.url.searchParams.get("guardado") === "1"));
+  });
+
+  route("POST", "/notificaciones", async (c) => {
+    if (requireAny(c).kind !== "director") throw new HttpError(403, "Solo para directores.");
+    const form = await readForm(c.req);
+    checkCsrf(c, form.get("_csrf") ?? "");
+    await repo.updateDirector(c.session!.director!.id, {
+      notify_replies: replyNotify(form.get("replies")),
+      notify_versions: form.get("versions") === "1",
+    });
+    redirect(c.res, "/notificaciones?guardado=1");
+  });
+
   // --- API ---
 
   const versionJson = (v: Version) => ({
@@ -478,7 +532,14 @@ export function createApp(deps: AppDeps) {
 
   route("GET", "/api/me", async (c) => {
     const v = requireAny(c);
-    json(c.res, 200, { kind: v.kind, name: whoName(c.session!), director_id: v.directorId, csrf: c.bearer ? undefined : c.session!.csrf });
+    const d = c.session!.director;
+    json(c.res, 200, {
+      kind: v.kind,
+      name: whoName(c.session!),
+      director_id: v.directorId,
+      csrf: c.bearer ? undefined : c.session!.csrf,
+      notifications: d ? { replies: d.notify_replies, versions: d.notify_versions, email: d.email !== null } : undefined,
+    });
   });
 
   route("GET", "/api/versions", async (c) => {
@@ -652,8 +713,24 @@ export function createApp(deps: AppDeps) {
   route("PATCH", "/api/comments/:id", async (c) => {
     const comment = await ownComment(c);
     const b = await readJson(c.req);
-    await repo.editComment(comment.id, str(b.body, "El comentario", 10_000, { required: true }));
+    const body = str(b.body, "El comentario", 10_000, { required: true });
+    const previous = await repo.editComment(comment.id, body);
+    if (comment.author_kind === "director" && previous !== null && previous !== body) {
+      later(async () => {
+        const [t] = await repo.listThreads({ kind: "owner", directorId: null }, { threadId: comment.thread_id });
+        if (t) await notifier.commentEdited(t, comment.id, previous);
+      });
+    }
     json(c.res, 200, { thread: await visibleThread(c, comment.thread_id) });
+  });
+
+  // Previous texts of an edited comment (owner only).
+  route("GET", "/api/comments/:id/edits", async (c) => {
+    requireOwner(c);
+    const id = toInt(c.params[0]);
+    if (!(await repo.getComment(id))) throw new HttpError(404, "No existe ese comentario.");
+    const edits = await repo.commentEdits(id);
+    json(c.res, 200, { edits: edits.map((e) => ({ body: e.body, edited_at: new Date(e.edited_at).toISOString() })) });
   });
 
   route("DELETE", "/api/comments/:id", async (c) => {
@@ -701,6 +778,7 @@ export function createApp(deps: AppDeps) {
       role: str(b.role, "El rol", 100),
       email: emailField(b.email),
       notify_versions: b.notify_versions === true,
+      notify_replies: b.notify_replies === undefined ? "never" : replyNotify(b.notify_replies),
     });
     log(`director #${director.id} created`);
     const mail = await maybeSendLink(director, secret, b.send_link === true);
@@ -717,6 +795,7 @@ export function createApp(deps: AppDeps) {
     if ("role" in b) patch.role = str(b.role, "El rol", 100);
     if ("email" in b) patch.email = emailField(b.email);
     if ("notify_versions" in b) patch.notify_versions = b.notify_versions === true;
+    if ("notify_replies" in b) patch.notify_replies = replyNotify(b.notify_replies);
     const d = await repo.updateDirector(id, patch);
     if (!d) throw new HttpError(404, "No existe ese director.");
     json(c.res, 200, { director: directorJson(d) });
@@ -784,7 +863,11 @@ export function createApp(deps: AppDeps) {
       return;
     }
     const sid = parseCookies(c.req.headers.cookie).get(SESSION_COOKIE);
-    if (sid) c.session = await repo.getSession(sid, (kind) => (kind === "owner" ? OWNER_TTL : DIRECTOR_TTL));
+    const ttl = (kind: Session["kind"]) => (kind === "owner" ? OWNER_TTL : DIRECTOR_TTL);
+    if (sid) c.session = await repo.getSession(sid, ttl);
+    // The server extended the session: extend the cookie too (a handler that
+    // sets its own cookie replaces this header).
+    if (c.session?.refreshed) c.res.setHeader("set-cookie", cookie(SESSION_COOKIE, sid!, ttl(c.session.kind) / 1000));
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {

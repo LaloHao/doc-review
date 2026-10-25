@@ -119,4 +119,27 @@ alter table sessions add column owner_fp text;
 create index comments_director_created_idx on comments (director_id, created_at);
 `,
   },
+  {
+    // Reply notifications for directors (opt-in), their daily digests, and the
+    // previous texts of edited comments.
+    name: "005_director_notifications_and_edits",
+    sql: `
+alter table directors add column notify_replies text not null default 'never' check (notify_replies in ('instant', 'daily', 'never'));
+
+create table director_digest_runs (
+  director_id integer not null references directors(id),
+  day date not null,
+  sent_at timestamptz not null default now(),
+  primary key (director_id, day)
+);
+
+create table comment_edits (
+  id serial primary key,
+  comment_id integer not null references comments(id),
+  body text not null,
+  edited_at timestamptz not null default now()
+);
+create index comment_edits_comment_idx on comment_edits (comment_id, id);
+`,
+  },
 ];

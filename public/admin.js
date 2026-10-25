@@ -76,6 +76,16 @@ document.querySelector("table.directors")?.addEventListener("click", async (e) =
   }
 });
 
+document.querySelector("table.directors")?.addEventListener("change", async (e) => {
+  const sel = e.target.closest("select[data-action=notify-replies]");
+  if (!sel) return;
+  try {
+    await api("PATCH", `/api/directors/${sel.dataset.id}`, { notify_replies: sel.value });
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
 document.getElementById("settings-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const status = document.getElementById("settings-status");

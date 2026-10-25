@@ -173,6 +173,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
+/** Hour of the directors' daily reply digests: DIGEST_HOUR, or 8:00 when unset. */
+export const directorDigestHour = (c: Config): number => c.digestHour ?? 8;
+
 /** What is enabled, without any secret value. */
 export function describeConfig(c: Config): string {
   return [

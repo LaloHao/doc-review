@@ -277,9 +277,9 @@ describe("notifications", () => {
     const { n, tg } = make(false);
     await n.commentCreated(thread, 1);
     expect(tg).toEqual([]);
-    expect(await n.digest([thread], new Date("2026-10-24T00:00:00Z"))).toBe(true);
+    expect(await n.digest([thread], new Date("2026-10-24T00:00:00Z"))).toBe("sent");
     expect(tg[0]).toContain("Resumen diario: 1 comentario");
-    expect(await n.digest([thread], new Date("2026-10-25T00:00:00Z"))).toBe(false);
+    expect(await n.digest([thread], new Date("2026-10-25T00:00:00Z"))).toBe("empty");
   });
   it("a failing channel doesn't stop the other", async () => {
     const mails: unknown[] = [];

@@ -23,7 +23,8 @@ Autor (usa ~/.config/revision-tesis/config.json: {"url", "token"}, modo 0600):
   revision-tesis comments [--version N|latest] [--all] [--json]
   revision-tesis avance tesis.org [-o avance.json]   genera avance.json desde los #+INCLUDE
   revision-tesis directors list
-  revision-tesis directors add "Nombre" [--role R] [--email E] [--notify] [--send-link]
+  revision-tesis directors add "Nombre" [--role R] [--email E] [--notify] [--replies instant|daily|never] [--send-link]
+  revision-tesis directors replies ID instant|daily|never   avisos de respuestas por correo
   revision-tesis directors rotate ID [--send-link]
   revision-tesis directors revoke ID
   revision-tesis sessions close-all [--directors]    cierra tus sesiones web (y las de los directores)
@@ -102,10 +103,10 @@ async function main(argv: string[]): Promise<number> {
     case "directors": {
       const [sub, ...args] = rest;
       const client = new Client(await loadClientConfig());
-      type D = { id: number; name: string; role: string; email: string | null; active: boolean };
+      type D = { id: number; name: string; role: string; email: string | null; active: boolean; notify_replies: string };
       if (sub === "list" || sub === undefined) {
         const { directors } = await client.request<{ directors: D[] }>("GET", "/api/directors");
-        for (const d of directors) console.log([d.id, d.active ? "activo" : "revocado", d.name, d.role, d.email ?? ""].map((x) => oneLine(String(x))).join("\t"));
+        for (const d of directors) console.log([d.id, d.active ? "activo" : "revocado", d.name, d.role, d.email ?? "", `respuestas: ${d.notify_replies}`].map((x) => oneLine(String(x))).join("\t"));
         return 0;
       }
       const { values, positionals } = parseArgs({
@@ -115,6 +116,7 @@ async function main(argv: string[]): Promise<number> {
           role: { type: "string" },
           email: { type: "string" },
           notify: { type: "boolean" },
+          replies: { type: "string" },
           "send-link": { type: "boolean" },
         },
       });
@@ -126,6 +128,7 @@ async function main(argv: string[]): Promise<number> {
           role: values.role ?? "",
           email: values.email ?? "",
           notify_versions: values.notify === true,
+          notify_replies: values.replies ?? "never",
           send_link: values["send-link"] === true,
         });
         console.log(`director ${r.director.id}: ${r.director.name}\nenlace (se muestra una sola vez): ${r.link}`);
@@ -140,6 +143,11 @@ async function main(argv: string[]): Promise<number> {
         });
         console.log(`enlace nuevo de ${r.director.name} (el anterior ya no funciona): ${r.link}`);
         if (values["send-link"]) console.log(r.email.sent ? "enlace enviado por correo" : `no se envió el correo: ${r.email.error}`);
+        return 0;
+      }
+      if (sub === "replies") {
+        const r = await client.json<{ director: D }>("PATCH", `/api/directors/${id}`, { notify_replies: positionals[1] });
+        console.log(`avisos de respuestas de ${oneLine(r.director.name)}: ${r.director.notify_replies}`);
         return 0;
       }
       if (sub === "revoke") {
