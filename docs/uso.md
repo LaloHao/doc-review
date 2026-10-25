@@ -174,6 +174,8 @@ respetan la visibilidad: nunca avisan de un comentario que el director no puede
 ver. Requiere correo configurado en el servidor y un correo registrado para el
 director.
 
+![Notificaciones del director](images/08-notificaciones.png)
+
 Cada director puede escribir hasta 500 comentarios y respuestas en 24 horas
 (`MAX_DIRECTOR_COMMENTS_PER_DAY`), además del límite de 60 por minuto.
 

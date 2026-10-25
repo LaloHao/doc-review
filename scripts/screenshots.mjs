@@ -76,6 +76,14 @@ await d.evaluate(() => document.querySelector(".page[data-page='3']").scrollInto
 await d.waitForTimeout(300);
 await d.screenshot({ path: out + "03-visor-director.png" });
 
+// The director's notification settings (a plain form).
+await d.click("nav a[href='/notificaciones']");
+await d.waitForSelector("text=Cuando alguien responda");
+await d.check("input[name=replies][value=daily]");
+await d.click("form[action='/notificaciones'] button[type=submit]");
+await d.waitForSelector("text=Guardado.");
+await d.screenshot({ path: out + "08-notificaciones.png" });
+
 // --- owner ---
 const octx = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "es-MX" });
 const o = await octx.newPage();
