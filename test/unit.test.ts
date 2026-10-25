@@ -12,7 +12,8 @@ import { safeEqual } from "../src/server/crypto.js";
 import { RateLimiter } from "../src/server/ratelimit.js";
 import { localDayHour } from "../src/server/main.js";
 import { s3Store } from "../src/storage.js";
-import { esc, renderComment } from "../src/text.js";
+import { cleanText, esc, renderComment } from "../src/text.js";
+import { fmtThread } from "../src/format.js";
 import { sampleAvance, sampleThesis } from "./fixtures/make-pdf.mjs";
 
 describe("avance.json", () => {
@@ -86,6 +87,39 @@ describe("output encoding", () => {
     expect(h).not.toMatch(/<img|<b>/);
     expect(renderComment("javascript:alert(1)")).not.toContain("<a");
     expect(renderComment('https://x.com/"onmouseover="alert(1)')).not.toContain('"onmouseover');
+  });
+});
+
+describe("untrusted text", () => {
+  const evil = "B \u001b]0;pwned\u0007 \u001b[31mred\u001b[0m \u202eevil\u2066x\u2069\u009b\r\nok\tend\u0000";
+  it("cleanText removes control and bidi characters, keeps \\n and \\t", () => {
+    expect(cleanText(evil)).toBe("B ]0;pwned [31mred[0m evilx\nok\tend");
+    expect(cleanText("a\rb")).toBe("a\nb");
+  });
+  it("the CLI prints nothing a terminal would interpret", () => {
+    const out = fmtThread({
+      id: 1,
+      version: 1,
+      page: 2,
+      quote: evil,
+      status: "open",
+      url: "https://r.example/v/1#hilo-1",
+      chapter: { id: "c", title: evil },
+      comments: [{ id: 1, author: { name: evil }, body: evil, created_at: "2026-10-24T10:00:00Z", deleted: false }],
+    });
+    expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(out).toContain("[31mred");
+  });
+  it("notifications carry the cleaned text", async () => {
+    const tg: string[] = [];
+    const n = new Notifier({ publicUrl: "https://r.example", thesisTitle: async () => "T", telegram: { send: async (t) => void tg.push(t) }, mailer: null, ownerEmail: "", instant: true, log: () => undefined });
+    const author = { kind: "director" as const, name: evil, director_id: 1 };
+    await n.commentCreated(
+      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, chapter: { id: "c", title: evil }, author, created_at: "", updated_at: "",
+        comments: [{ id: 1, author, body: evil, body_html: "", created_at: "", edited_at: null, deleted: false, mine: false }] },
+      1,
+    );
+    expect(tg[0]).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
   });
 });
 

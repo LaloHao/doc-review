@@ -514,3 +514,18 @@ describe("daily digest and the owner client", () => {
     await expect(new Client({ url: s.url, token: "nope" }).threads({})).rejects.toThrow(/Token no válido/);
   });
 });
+
+describe("untrusted text", () => {
+  it("stores comments without control or bidi characters", async () => {
+    const res = await codirector.send("POST", "/api/threads", {
+      version: 1,
+      page: 2,
+      anchor: "point",
+      rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }],
+      body: "ok \u001b[2J\u001b]0;x\u0007 \u202efin\u0000\r\nlínea 2",
+    });
+    expect(res.status).toBe(201);
+    const { thread } = (await res.json()) as { thread: { comments: { body: string }[] } };
+    expect(thread.comments[0]!.body).toBe("ok [2J]0;x fin\nlínea 2");
+  });
+});

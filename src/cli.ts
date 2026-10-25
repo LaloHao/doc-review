@@ -4,10 +4,11 @@
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { avanceFromOrg } from "./avance.js";
-import { Client, loadClientConfig, type ThreadJson } from "./client.js";
+import { Client, loadClientConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
 import { newOwnerToken, sha256Hex } from "./server/crypto.js";
+import { fmtThread, oneLine } from "./format.js";
 import { startServer } from "./server/main.js";
 
 const HELP = `revision-tesis — comentarios de los directores sobre el PDF de la tesis
@@ -26,22 +27,6 @@ Autor (usa ~/.config/revision-tesis/config.json: {"url", "token"}, modo 0600):
   revision-tesis directors rotate ID [--send-link]
   revision-tesis directors revoke ID
 `;
-
-const timeFmt = new Intl.DateTimeFormat("es-MX", { dateStyle: "short", timeStyle: "short" });
-const localTime = (iso: string) => timeFmt.format(new Date(iso));
-
-function fmtThread(t: ThreadJson): string {
-  const lines = [
-    `#${t.id} · v${t.version} p. ${t.page}${t.chapter ? ` · ${t.chapter.title}` : ""} · ${t.status === "open" ? "abierto" : "resuelto"}`,
-  ];
-  if (t.quote) lines.push(`  «${t.quote.replace(/\s+/g, " ").slice(0, 200)}»`);
-  for (const c of t.comments) {
-    const body = c.deleted ? "(eliminado)" : (c.body ?? "").replace(/\n/g, "\n    ");
-    lines.push(`  ${c.author.name} (${localTime(c.created_at)}):`, `    ${body}`);
-  }
-  lines.push(`  ${t.url}`);
-  return lines.join("\n");
-}
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -119,7 +104,7 @@ async function main(argv: string[]): Promise<number> {
       type D = { id: number; name: string; role: string; email: string | null; active: boolean };
       if (sub === "list" || sub === undefined) {
         const { directors } = await client.request<{ directors: D[] }>("GET", "/api/directors");
-        for (const d of directors) console.log(`${d.id}\t${d.active ? "activo" : "revocado"}\t${d.name}\t${d.role}\t${d.email ?? ""}`);
+        for (const d of directors) console.log([d.id, d.active ? "activo" : "revocado", d.name, d.role, d.email ?? ""].map((x) => oneLine(String(x))).join("\t"));
         return 0;
       }
       const { values, positionals } = parseArgs({

@@ -8,6 +8,9 @@ import type { Config } from "../config.js";
 import type { Director, ThreadOut, Version } from "../repo.js";
 import { excerpt } from "../text.js";
 
+/** Names and titles: one line, without control or bidi characters. */
+const name = (s: string | null | undefined) => excerpt(s ?? "", 300);
+
 export interface Mail {
   to: string;
   subject: string;
@@ -80,8 +83,8 @@ export function threadUrl(publicUrl: string, t: { version: number; id: number })
 function commentText(t: ThreadOut, commentId: number, publicUrl: string): { title: string; body: string } {
   const c = t.comments.find((x) => x.id === commentId) ?? t.comments[t.comments.length - 1]!;
   const isReply = t.comments[0]?.id !== c.id;
-  const where = [`versión ${t.version}`, `página ${t.page}`, t.chapter ? t.chapter.title : null].filter(Boolean).join(", ");
-  const title = `${isReply ? "Respuesta" : "Comentario nuevo"} de ${c.author.name}`;
+  const where = [`versión ${t.version}`, `página ${t.page}`, t.chapter ? name(t.chapter.title) : null].filter(Boolean).join(", ");
+  const title = `${isReply ? "Respuesta" : "Comentario nuevo"} de ${name(c.author.name)}`;
   const lines = [
     `${title} (${where})`,
     t.quote ? `«${excerpt(t.quote, 200)}»` : null,
@@ -135,7 +138,7 @@ export class Notifier {
     if (items.length === 0) return false;
     const lines = [`Resumen diario: ${items.length} comentario(s) nuevo(s) de tus directores.`, ""];
     for (const { t, c } of items.slice(0, 50)) {
-      lines.push(`• ${c.author.name} — v${t.version}, p. ${t.page}${t.chapter ? `, ${t.chapter.title}` : ""}`);
+      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.chapter ? `, ${name(t.chapter.title)}` : ""}`);
       lines.push(`  ${excerpt(c.body ?? "", 200)}`);
       lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
     }
@@ -147,7 +150,7 @@ export class Notifier {
   /** New version published: email the directors that opted in (no secret link). */
   async versionPublished(version: Version, directors: Director[]): Promise<void> {
     if (!this.d.mailer) return;
-    const title = await this.d.thesisTitle();
+    const title = name(await this.d.thesisTitle());
     const to = directors.filter((d) => d.notify_versions && d.email && !d.revoked_at);
     const results = await Promise.allSettled(
       to.map((d) =>
@@ -155,7 +158,7 @@ export class Notifier {
           to: d.email!,
           subject: `Nueva versión de la tesis (v${version.number})`,
           text: [
-            `Estimado(a) ${d.name}:`,
+            `Estimado(a) ${name(d.name)}:`,
             "",
             `Se publicó la versión ${version.number} de la tesis «${title}».`,
             version.note ? `\nNota de la versión:\n${excerpt(version.note, 2000)}\n` : "",
@@ -174,12 +177,12 @@ export class Notifier {
   async sendLink(director: Director, link: string): Promise<void> {
     if (!this.d.mailer) throw new Error("El correo no está configurado.");
     if (!director.email) throw new Error("El director no tiene correo registrado.");
-    const title = await this.d.thesisTitle();
+    const title = name(await this.d.thesisTitle());
     await this.d.mailer.send({
       to: director.email,
       subject: "Su enlace para revisar la tesis",
       text: [
-        `Estimado(a) ${director.name}:`,
+        `Estimado(a) ${name(director.name)}:`,
         "",
         `Este es su enlace personal para revisar y comentar la tesis «${title}»:`,
         "",

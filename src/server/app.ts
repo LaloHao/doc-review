@@ -36,7 +36,7 @@ import {
   send,
 } from "./http.js";
 import * as pages from "./pages.js";
-import { esc } from "../text.js";
+import { cleanText, esc } from "../text.js";
 import { RateLimiter } from "./ratelimit.js";
 
 export const SESSION_COOKIE = "__Host-rt_session";
@@ -143,7 +143,7 @@ function str(v: unknown, field: string, max: number, opts: { required?: boolean 
     return "";
   }
   if (typeof v !== "string") throw new HttpError(400, `${field} debe ser texto.`);
-  const s = v.replace(/\u0000/g, "").trim();
+  const s = cleanText(v).trim();
   if (opts.required && s === "") throw new HttpError(400, `Falta ${field}.`);
   if (s.length > max) throw new HttpError(400, `${field} es demasiado largo (máx. ${max}).`);
   return s;

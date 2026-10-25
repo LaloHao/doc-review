@@ -88,6 +88,23 @@ Use it to regenerate avance.json, for example
 (defvar revision-tesis--index-cache (make-hash-table :test #'equal)
   "File name → (MTIME . INDEX) for the org sources.")
 
+;;; Untrusted text
+
+(defconst revision-tesis--unsafe-chars-regexp
+  (rx (any (0 . 8) 11 12 (13 . 31) (127 . 159)
+           #x61c #x200e #x200f (#x202a . #x202e) (#x2066 . #x2069)
+           ;; Raw bytes left by invalid UTF-8.
+           (#x3fff80 . #x3fffff)))
+  "Control characters (except tab and newline), bidi controls and raw bytes.")
+
+(defun revision-tesis--sanitize (s)
+  "S without control or bidi characters (they come from the directors).
+Escape sequences, carriage returns and bidi overrides could make the text
+look different from what it is in a buffer, the echo area or Flymake."
+  (if (stringp s)
+      (replace-regexp-in-string revision-tesis--unsafe-chars-regexp "" s t t)
+    ""))
+
 ;;; Configuration and HTTP
 
 (defun revision-tesis--config ()
@@ -151,8 +168,10 @@ from JSON are) together with a binary body."
                 (error nil))))
     (when (or (null status) (>= status 400))
       (user-error "revision-tesis: %s"
-                  (or (and (consp data) (alist-get 'error data))
-                      (format "HTTP %s" status))))
+                  (let ((msg (and (consp data) (alist-get 'error data))))
+                    (if (stringp msg)
+                        (revision-tesis--sanitize msg)
+                      (format "HTTP %s" status)))))
     data))
 
 (defun revision-tesis--json-body (object)
@@ -237,7 +256,8 @@ NOTE is the version note shown to the directors."
                                        (concat "multipart/form-data; boundary=" boundary)))
            (v (alist-get 'version r)))
       (message "Publicada la versión %s (%s páginas): %s"
-               (alist-get 'number v) (alist-get 'page_count v) (alist-get 'url r))
+               (alist-get 'number v) (alist-get 'page_count v)
+               (revision-tesis--clean-heading (alist-get 'url r)))
       r)))
 
 ;;; Normalization and anchoring
@@ -383,11 +403,11 @@ The file named after the thread's chapter id is tried first."
   "TEXT as org fixed-width lines (\": …\"), so nothing in it is markup or a link."
   (let ((pad (or indent "")))
     (mapconcat (lambda (l) (concat pad (if (string-empty-p l) ":" (concat ": " l))))
-               (split-string (or text "") "\n") "\n")))
+               (split-string (revision-tesis--sanitize text) "\n") "\n")))
 
 (defun revision-tesis--clean-heading (s)
   "S safe for an org headline: one line, no link brackets."
-  (replace-regexp-in-string "\\[\\[\\|\\]\\]\\|[\n\r]" " " (or s "")))
+  (replace-regexp-in-string "\\[\\[\\|\\]\\]\\|[\n\t]" " " (revision-tesis--sanitize s)))
 
 (defun revision-tesis--date (iso)
   "Short local date of ISO."
@@ -427,7 +447,7 @@ The file named after the thread's chapter id is tried first."
     (dolist (c comments)
       (insert (format "- %s, %s%s:\n"
                       (revision-tesis--clean-heading (alist-get 'name (alist-get 'author c)))
-                      (revision-tesis--date (alist-get 'created_at c))
+                      (revision-tesis--clean-heading (revision-tesis--date (alist-get 'created_at c)))
                       (if (alist-get 'edited_at c) " (editado)" ""))
               (if (eq (alist-get 'deleted c) t)
                   "  : (comentario eliminado)"
@@ -508,9 +528,12 @@ The file named after the thread's chapter id is tried first."
              (choices (mapcar (lambda (th)
                                 (cons (format "#%s p. %s · %s: %s"
                                               (alist-get 'id th) (alist-get 'page th)
-                                              (alist-get 'name (alist-get 'author th))
+                                              (revision-tesis--clean-heading
+                                               (alist-get 'name (alist-get 'author th)))
                                               (truncate-string-to-width
-                                               (or (alist-get 'body (car (alist-get 'comments th))) "") 60))
+                                               (revision-tesis--clean-heading
+                                                (alist-get 'body (car (alist-get 'comments th))))
+                                               60))
                                       (alist-get 'id th)))
                               threads)))
         (unless choices (user-error "No hay comentarios abiertos"))
@@ -552,10 +575,10 @@ The file named after the thread's chapter id is tried first."
   (let* ((cs (alist-get 'comments thread))
          (last (car (last (cl-remove-if (lambda (c) (eq (alist-get 'deleted c) t)) cs)))))
     (format "%s (v%s p. %s%s): %s"
-            (alist-get 'name (alist-get 'author (car cs)))
+            (revision-tesis--clean-heading (alist-get 'name (alist-get 'author (car cs))))
             (alist-get 'version thread) (alist-get 'page thread)
             (if (> (length cs) 1) (format ", %d mensajes" (length cs)) "")
-            (replace-regexp-in-string "[\n\r]+" " " (or (alist-get 'body last) "")))))
+            (replace-regexp-in-string "[\n\t]+" " " (revision-tesis--sanitize (alist-get 'body last))))))
 
 (defun revision-tesis--buffer-diagnostics (threads)
   "Flymake diagnostics for THREADS anchored in the current buffer."

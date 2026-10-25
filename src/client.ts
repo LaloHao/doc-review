@@ -4,6 +4,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { cleanText } from "./text.js";
 
 export interface ClientConfig {
   url: string;
@@ -60,8 +61,8 @@ export class Client {
       /* not JSON */
     }
     if (!res.ok) {
-      const msg = (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
-      throw new ApiError(res.status, msg);
+      const msg = (data as { error?: unknown } | null)?.error;
+      throw new ApiError(res.status, typeof msg === "string" ? cleanText(msg).slice(0, 500) : `HTTP ${res.status}`);
     }
     return data as T;
   }

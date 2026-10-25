@@ -16,6 +16,19 @@ export function esc(s: unknown): string {
 }
 
 /**
+ * C0/C1 control characters (except \t and \n) and bidirectional controls. Text
+ * from directors may reach terminals (CLI), Emacs buffers, Telegram and email:
+ * escape sequences could rewrite a terminal, and bidi overrides can make text
+ * read differently from what it is ("Trojan Source").
+ */
+const UNSAFE_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/** Untrusted text with line ends normalized to \n and unsafe characters removed. */
+export function cleanText(s: string): string {
+  return s.replace(/\r\n?/g, "\n").replace(UNSAFE_CHARS, "");
+}
+
+/**
  * Renders a comment body: **bold**, *italic*, `code`, http(s) links, line breaks
  * and paragraphs. Input is escaped first; links only allow http/https.
  */
@@ -40,6 +53,6 @@ export function renderComment(body: string): string {
 
 /** Plain-text excerpt for notifications (no markup, bounded length). */
 export function excerpt(s: string, max = 300): string {
-  const flat = s.replace(/\s+/g, " ").trim();
+  const flat = cleanText(s).replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }

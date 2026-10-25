@@ -111,6 +111,25 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
       (should (equal (file-name-nondirectory (car loc)) "01-introduccion.org"))
       (should (= (revision-tesis--line-at (car loc) (cadr loc)) 9)))))
 
+(ert-deftest revision-tesis-test-sanitize ()
+  (let ((evil (concat "B \e]0;pwned\a \e[31mrojo\e[0m \u202eevil\u2066x\u2069\r\nok\tfin \u009b" (string #x3fffe2))))
+    (should (equal (revision-tesis--sanitize evil) "B ]0;pwned [31mrojo[0m evilx\nok\tfin "))
+    (should (equal (revision-tesis--sanitize nil) ""))
+    (should-not (string-match-p revision-tesis--unsafe-chars-regexp
+                                (revision-tesis--literal evil "  ")))
+    (should-not (string-match-p "[\n\e]" (revision-tesis--clean-heading evil)))))
+
+(ert-deftest revision-tesis-test-buffer-has-no-control-chars ()
+  (revision-tesis-test--with-thesis
+    (revision-tesis-test--mock
+        `((threads . (,(revision-tesis-test--thread 1 3 "cita \u202eal revés" "Hola \e[2J\e]0;x\a fin"))))
+      (let ((default-directory root))
+        (revision-tesis-comentarios))
+      (with-current-buffer revision-tesis-buffer-name
+        (should-not (string-match-p revision-tesis--unsafe-chars-regexp (buffer-string)))
+        (should (string-match-p "Hola \\[2J\\]0;x fin" (buffer-string))))
+      (kill-buffer revision-tesis-buffer-name))))
+
 ;;; Config and HTTP plumbing
 
 (ert-deftest revision-tesis-test-config-permissions ()
