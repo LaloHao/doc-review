@@ -10,6 +10,10 @@ parentPort?.once("message", async (/** @type {{ data: Uint8Array; maxPages: numb
     parentPort?.postMessage({ ok: true, ...r });
   } catch (e) {
     const err = /** @type {Error} */ (e);
-    parentPort?.postMessage({ ok: false, problem: e instanceof PdfProblem, message: err.message });
+    parentPort?.postMessage(
+      e instanceof PdfProblem
+        ? { ok: false, problem: e.code, detail: e.detail, message: err.message }
+        : { ok: false, problem: null, detail: "", message: err.message },
+    );
   }
 });

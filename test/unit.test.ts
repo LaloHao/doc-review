@@ -116,7 +116,8 @@ describe("untrusted text", () => {
       page: 2,
       quote: evil,
       status: "open",
-      url: "https://r.example/v/1#hilo-1",
+      document: "d",
+      url: "https://r.example/d/d/v/1#thread-1",
       section: { id: "c", title: evil },
       comments: [{ id: 1, author: { name: evil }, body: evil, created_at: "2026-10-24T10:00:00Z", deleted: false }],
     });
@@ -125,10 +126,11 @@ describe("untrusted text", () => {
   });
   it("notifications carry the cleaned text", async () => {
     const tg: string[] = [];
-    const n = new Notifier({ publicUrl: "https://r.example", thesisTitle: async () => "T", telegram: { send: async (t) => void tg.push(t) }, mailer: null, ownerEmail: "", instant: true, log: () => undefined });
-    const author = { kind: "director" as const, name: evil, director_id: 1 };
+    const n = new Notifier({ publicUrl: "https://r.example", telegram: { send: async (t) => void tg.push(t) }, mailer: null, ownerEmail: "", instant: true, log: () => undefined });
+    const author = { kind: "reviewer" as const, name: evil, person_id: 1, role: evil };
     await n.commentCreated(
-      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, section: { id: "c", title: evil }, author, created_at: "", updated_at: "", can_resolve: false,
+      { slug: "d", title: evil, language: "en" },
+      { id: 7, document: "d", version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, section: { id: "c", title: evil }, author, created_at: "", updated_at: "", can_resolve: false,
         comments: [{ id: 1, author, body: evil, body_html: "", created_at: "", edited_at: null, deleted: false, mine: false }] },
       1,
     );
@@ -181,9 +183,11 @@ describe("pdf", () => {
     expect(joinTextItems([{ str: "anonimiza-", hasEOL: true }, { str: "ción de  datos" }])).toBe("generación trazable de recomendaciones de rutas");
   });
   it("parses in a worker with a time limit and a heap limit", async () => {
-    await expect(extractPdf(sampleThesis(), { timeoutMs: 1 })).rejects.toThrow(/tardó demasiado/);
-    await expect(extractPdf(sampleThesis(), { maxHeapMb: 4 })).rejects.toThrow(/demasiada memoria/);
+    await expect(extractPdf(sampleThesis(), { timeoutMs: 1 })).rejects.toMatchObject({ key: "err.pdf_timeout", params: { s: 1 } });
+    await expect(extractPdf(sampleThesis(), { maxHeapMb: 4 })).rejects.toMatchObject({ key: "err.pdf_memory" });
+    await expect(extractPdf(new TextEncoder().encode("hola"))).rejects.toMatchObject({ key: "err.pdf_not_pdf" });
     await expect(extractPdf(new TextEncoder().encode("%PDF-1.4 basura"))).rejects.toBeInstanceOf(PdfError);
+    await expect(extractPdf(new TextEncoder().encode("%PDF-1.4 basura"))).rejects.toMatchObject({ key: "err.pdf_open" });
   });
   it("extracts text from a PDF", async () => {
     const { pageCount, pages } = await extractPdf(sampleThesis());
@@ -194,9 +198,9 @@ describe("pdf", () => {
 });
 
 describe("misc", () => {
-  it("never logs director link paths", async () => {
+  it("never logs link paths", async () => {
     const { loggablePath } = await import("../src/server/app.js");
-    expect(loggablePath("/acceso/abcdef")).toBe("/acceso/[oculto]");
+    expect(loggablePath("/a/abcdef")).toBe("/a/[hidden]");
     expect(loggablePath("/api/threads")).toBe("/api/threads");
   });
   it("compares secrets in constant time", () => {
@@ -290,8 +294,10 @@ describe("misc", () => {
 });
 
 describe("notifications", () => {
+  const DOC = { slug: "thesis", title: "Mi tesis", language: "es" as const };
   const thread: ThreadOut = {
     id: 7,
+    document: "thesis",
     version: 2,
     page: 12,
     anchor: "text",
@@ -301,12 +307,12 @@ describe("notifications", () => {
     resolved_at: null,
     resolved_by: null,
     section: { id: "01-introduccion", title: "Introducción" },
-    author: { kind: "director", name: "Dr. A", director_id: 1 },
+    author: { kind: "reviewer", name: "Dr. A", person_id: 1, role: "Director" },
     created_at: "2026-10-24T10:00:00Z",
     updated_at: "2026-10-24T10:00:00Z",
     can_resolve: false,
     comments: [
-      { id: 1, author: { kind: "director", name: "Dr. A", director_id: 1 }, body: "Revise esto.", body_html: "", created_at: "2026-10-24T10:00:00Z", edited_at: null, deleted: false, mine: false },
+      { id: 1, author: { kind: "reviewer", name: "Dr. A", person_id: 1, role: "Director" }, body: "Revise esto.", body_html: "", created_at: "2026-10-24T10:00:00Z", edited_at: null, deleted: false, mine: false },
     ],
   };
   const make = (instant = true) => {
@@ -314,7 +320,6 @@ describe("notifications", () => {
     const mails: { to: string; subject: string; text: string }[] = [];
     const n = new Notifier({
       publicUrl: "https://r.example",
-      thesisTitle: async () => "T",
       telegram: { send: async (t) => void tg.push(t) },
       mailer: { send: async (m) => void mails.push(m) },
       ownerEmail: "me@example.test",
@@ -325,32 +330,32 @@ describe("notifications", () => {
   };
   it("notifies the owner on both channels with a link", async () => {
     const { n, tg, mails } = make();
-    await n.commentCreated(thread, 1);
-    expect(tg[0]).toContain("https://r.example/v/2#hilo-7");
+    await n.commentCreated(DOC, thread, 1);
+    expect(tg[0]).toContain("https://r.example/d/thesis/v/2#thread-7");
     expect(tg[0]).toContain("página 12");
+    expect(tg[0]).toContain("Comentario nuevo de Dr. A (Director)");
     expect(mails[0]).toMatchObject({ to: "me@example.test" });
   });
   it("can be limited to the digest", async () => {
     const { n, tg } = make(false);
-    await n.commentCreated(thread, 1);
+    await n.commentCreated(DOC, thread, 1);
     expect(tg).toEqual([]);
-    expect(await n.digest([thread], new Date("2026-10-24T00:00:00Z"))).toBe("sent");
-    expect(tg[0]).toContain("Resumen diario: 1 comentario");
-    expect(await n.digest([thread], new Date("2026-10-25T00:00:00Z"))).toBe("empty");
+    expect(await n.digest(DOC, [thread], new Date("2026-10-24T00:00:00Z"))).toBe("sent");
+    expect(tg[0]).toContain("Resumen diario de «Mi tesis»: 1 comentario nuevo de tus revisores.");
+    expect(await n.digest(DOC, [thread], new Date("2026-10-25T00:00:00Z"))).toBe("empty");
   });
   it("a failing channel doesn't stop the other", async () => {
     const mails: unknown[] = [];
     const logs: string[] = [];
     const n = new Notifier({
       publicUrl: "https://r.example",
-      thesisTitle: async () => "T",
       telegram: { send: async () => { throw new Error("HTTP 500"); } },
       mailer: { send: async (m) => void mails.push(m) },
       ownerEmail: "me@example.test",
       instant: true,
       log: (m) => void logs.push(m),
     });
-    await n.commentCreated(thread, 1);
+    await n.commentCreated(DOC, thread, 1);
     expect(mails).toHaveLength(1);
     expect(logs[0]).toContain("HTTP 500");
   });
@@ -368,5 +373,39 @@ describe("router", () => {
     expect(r.match("GET", "/a/12/y")).toEqual({ status: 404 });
     expect(r.match("GET", "/a/1%2F2")).toMatchObject({ params: ["1%2F2"] });
     expect(r.match("GET", "/static/x/y.css")).toMatchObject({ params: ["x/y.css"] });
+  });
+});
+
+describe("client configuration", () => {
+  const write = async (dir: string, name: string, data: unknown, mode = 0o600) => {
+    const { chmod } = await import("node:fs/promises");
+    const p = join(dir, name);
+    await writeFile(p, typeof data === "string" ? data : JSON.stringify(data));
+    await chmod(p, mode);
+    return p;
+  };
+
+  it("reads the token for the selected server only, from a private file", async () => {
+    const { loadClientConfig } = await import("../src/client.js");
+    const dir = await mkdtemp(join(tmpdir(), "dr-config-"));
+    const cfg = await write(dir, "config.json", { url: "https://review.example/", token: "t1", servers: { "https://other.example": "t2" } });
+    expect(await loadClientConfig(cfg)).toEqual({ url: "https://review.example", token: "t1" });
+    expect(await loadClientConfig(cfg, "https://other.example/")).toEqual({ url: "https://other.example", token: "t2" });
+    // A project file pointing elsewhere never gets the default token.
+    await expect(loadClientConfig(cfg, "https://evil.example")).rejects.toThrow(/no token for https:\/\/evil\.example/);
+    await expect(loadClientConfig(cfg, "http://evil.example")).rejects.toThrow(/https/);
+    const open = await write(dir, "open.json", { url: "https://review.example", token: "t" }, 0o644);
+    await expect(loadClientConfig(open)).rejects.toThrow(/readable by other users/);
+    await expect(loadClientConfig(join(dir, "missing.json"))).rejects.toThrow(/does not exist/);
+  });
+
+  it("finds .doc-review.json upward", async () => {
+    const { findProjectConfig } = await import("../src/client.js");
+    const dir = await mkdtemp(join(tmpdir(), "dr-project-"));
+    await mkdir(join(dir, "chapters/deep"), { recursive: true });
+    await write(dir, ".doc-review.json", { document: "thesis", pdf: "tesis.pdf", progress: { command: "make avance", file: "avance.json" }, sources: ["capitulos/*.org"] });
+    const p = await findProjectConfig(join(dir, "chapters/deep"));
+    expect(p).toMatchObject({ root: dir, document: "thesis", pdf: "tesis.pdf", progress: { command: "make avance", file: "avance.json" }, sources: ["capitulos/*.org"] });
+    expect(await findProjectConfig(tmpdir())).toBeNull();
   });
 });

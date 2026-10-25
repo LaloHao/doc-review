@@ -38,14 +38,14 @@ export const isHealthPath = (p: string) => p === "/healthz" || p === "/livez";
 
 async function serveFile(c: Ctx, root: string, rel: string, maxAge: number): Promise<void> {
   const path = normalize(join(root, rel));
-  if (!path.startsWith(root + sep)) throw new HttpError(404, "No encontrado.");
+  if (!path.startsWith(root + sep)) throw new HttpError(404, "err.not_found");
   const type = MIME[extname(path)];
-  if (!type) throw new HttpError(404, "No encontrado.");
+  if (!type) throw new HttpError(404, "err.not_found");
   let data: Buffer;
   try {
     data = await readFile(path);
   } catch {
-    throw new HttpError(404, "No encontrado.");
+    throw new HttpError(404, "err.not_found");
   }
   send(c.res, 200, data, type, { "cache-control": `public, max-age=${maxAge}` });
 }
@@ -62,7 +62,7 @@ export function staticRoutes(r: Router<Ctx>, app: App): void {
   r.get("/vendor/pdfjs/(.+)", async (c) => {
     const rel = c.params[0]!;
     const mapped = VENDOR[rel] ?? (/^(cmaps|standard_fonts|wasm|iccs)\/[\w.-]+$/.test(rel) ? rel : null);
-    if (!mapped) throw new HttpError(404, "No encontrado.");
+    if (!mapped) throw new HttpError(404, "err.not_found");
     await serveFile(c, PDFJS_DIR, mapped, 86400);
   });
   r.get("/favicon.ico", async (c) => redirect(c.res, "/static/favicon.svg"));

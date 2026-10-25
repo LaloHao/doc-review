@@ -4,11 +4,22 @@
 // the server down or block it.
 
 import { Worker } from "node:worker_threads";
+import type { MsgKey } from "../i18n/index.js";
 import { joinTextItems } from "./core.mjs";
 
 export { joinTextItems };
 
-export class PdfError extends Error {}
+/** A PDF that can't be accepted: a message key and its parameters, for the owner. */
+export class PdfError extends Error {
+  constructor(
+    readonly key: MsgKey,
+    readonly params: Record<string, string | number> = {},
+  ) {
+    super(`${key} ${JSON.stringify(params)}`);
+  }
+}
+
+const PROBLEM_KEYS: Record<string, MsgKey> = { open: "err.pdf_open", pages: "err.pdf_pages", read: "err.pdf_read" };
 
 export const MAX_PAGES = 2000;
 
@@ -35,10 +46,10 @@ const WORKER_URL = new URL("./worker.mjs", import.meta.url);
 
 type WorkerReply =
   | { ok: true; pageCount: number; pages: string[] }
-  | { ok: false; problem: boolean; message: string };
+  | { ok: false; problem: "open" | "pages" | "read" | null; detail: string; message: string };
 
 export async function extractPdf(data: Uint8Array, opts: ExtractOptions = {}): Promise<ExtractedPdf> {
-  if (!looksLikePdf(data)) throw new PdfError("El archivo no es un PDF.");
+  if (!looksLikePdf(data)) throw new PdfError("err.pdf_not_pdf");
   const timeoutMs = opts.timeoutMs ?? 90_000;
   const worker = new Worker(WORKER_URL, {
     resourceLimits: { maxOldGenerationSizeMb: opts.maxHeapMb ?? 512, maxYoungGenerationSizeMb: 32 },
@@ -47,7 +58,7 @@ export async function extractPdf(data: Uint8Array, opts: ExtractOptions = {}): P
   });
   try {
     const reply = await new Promise<WorkerReply>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new PdfError(`El PDF tardó demasiado en procesarse (más de ${Math.round(timeoutMs / 1000)} s).`)), timeoutMs);
+      const timer = setTimeout(() => reject(new PdfError("err.pdf_timeout", { s: Math.max(1, Math.round(timeoutMs / 1000)) })), timeoutMs);
       worker.once("message", (m: WorkerReply) => {
         clearTimeout(timer);
         resolve(m);
@@ -56,7 +67,7 @@ export async function extractPdf(data: Uint8Array, opts: ExtractOptions = {}): P
         clearTimeout(timer);
         reject(
           e.code === "ERR_WORKER_OUT_OF_MEMORY"
-            ? new PdfError("El PDF necesita demasiada memoria para procesarse.")
+            ? new PdfError("err.pdf_memory")
             : new Error(`PDF worker failed: ${e.message}`),
         );
       });
@@ -67,7 +78,11 @@ export async function extractPdf(data: Uint8Array, opts: ExtractOptions = {}): P
       // Structured clone: the worker gets its own copy (pdf.js detaches it).
       worker.postMessage({ data, maxPages: MAX_PAGES });
     });
-    if (!reply.ok) throw reply.problem ? new PdfError(reply.message) : new Error(`PDF worker: ${reply.message}`);
+    if (!reply.ok) {
+      throw reply.problem
+        ? new PdfError(PROBLEM_KEYS[reply.problem]!, reply.problem === "pages" ? { max: Number(reply.detail) } : { detail: reply.detail.slice(0, 300) })
+        : new Error(`PDF worker: ${reply.message}`);
+    }
     return { pageCount: reply.pageCount, pages: reply.pages };
   } finally {
     await worker.terminate();

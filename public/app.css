@@ -41,7 +41,10 @@ nav.top {
   padding: 0.6rem 1rem; background: var(--card); border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 20;
 }
-nav.top .brand { font-weight: 600; text-decoration: none; color: var(--fg); margin-right: auto; }
+nav.top .brand { font-weight: 600; text-decoration: none; color: var(--fg); }
+nav.top .doc-title { color: var(--fg); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+nav.top .doc-title::before { content: "/"; color: var(--muted); margin-right: 0.5rem; }
+nav.top .spacer { flex: 1; }
 nav.top .who { color: var(--muted); font-size: 0.9rem; }
 nav.top .nav-link { font-size: 0.9rem; }
 
@@ -83,11 +86,12 @@ td.actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 progress { width: 6rem; vertical-align: middle; }
 
 .tag { display: inline-block; font-size: 0.75rem; padding: 0 0.45rem; border-radius: 999px; border: 1px solid var(--line); background: #fff; white-space: nowrap; }
-.tag-borrador { background: #fff4d6; border-color: #e8c66a; }
-.tag-revision { background: #e3eefc; border-color: #9cbcea; }
-.tag-terminado, .tag-open { background: #e2f5e7; border-color: #8fcf9f; }
+.tag-draft { background: #fff4d6; border-color: #e8c66a; }
+.tag-review { background: #e3eefc; border-color: #9cbcea; }
+.tag-done, .tag-open { background: #e2f5e7; border-color: #8fcf9f; }
 .tag-resolved { background: #eee; }
 .tag-revoked { background: #fde8e6; border-color: #e8a29a; }
+.tag-role { margin-left: 0.35rem; background: #f1f3f5; }
 .tag-owner { margin-left: 0.35rem; background: #efe7fb; border-color: #c4aee6; }
 
 .box { margin-top: 1rem; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 1rem; }
@@ -98,8 +102,8 @@ progress { width: 6rem; vertical-align: middle; }
 .channels { padding-left: 1.2rem; }
 blockquote.note { border-left: 4px solid var(--line); margin: 0.6rem 0; padding: 0.2rem 0.8rem; white-space: pre-wrap; }
 
-details.chapter-diff { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.9rem; margin: 0.5rem 0; }
-details.chapter-diff summary { cursor: pointer; display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline; }
+details.section-diff { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.9rem; margin: 0.5rem 0; }
+details.section-diff summary { cursor: pointer; display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline; }
 .hunk { border-top: 1px dashed var(--line); padding: 0.4rem 0; }
 .hunk p { margin: 0.2rem 0; }
 .d-add { background: #e6f6ea; }
@@ -190,3 +194,6 @@ body.point-mode .textLayer span { cursor: crosshair; }
   .page-number { display: none; }
   .link-input { min-width: 0; }
 }
+
+tr.archived td { color: var(--muted); }
+.new-person[hidden] { display: none; }

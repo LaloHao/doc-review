@@ -43,15 +43,15 @@ export interface Config {
   /** Read the client IP from CF-Connecting-IP (behind Cloudflare Tunnel). */
   trustCloudflare: boolean;
   maxPdfBytes: number;
-  /** New threads + replies per director in 24 hours (0 = no cap). */
-  maxDirectorCommentsPerDay: number;
+  /** New threads + replies per reviewer in 24 hours, all documents together (0 = no cap). */
+  maxReviewerCommentsPerDay: number;
   telegram: { botToken: string; chatId: string } | null;
   smtp: SmtpConfig | null;
   /** Owner address for email notifications ("" = no owner emails). */
   ownerEmail: string;
   /** Send a notification on every new comment/reply. */
   notifyInstant: boolean;
-  /** Hour (0-23, in TZ) of the daily digest; null = no digest. */
+  /** Hour (0-23, in TZ) of the owner's daily digest; null = no digest. */
   digestHour: number | null;
   timeZone: string;
 }
@@ -163,10 +163,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     migrateOnStart: bool(env, "MIGRATE_ON_START", true),
     storage,
     ownerTokenSha256,
-    ownerName: str(env, "OWNER_NAME", "Eduardo Ejemplo"),
+    ownerName: str(env, "OWNER_NAME", "Owner") || "Owner",
     trustCloudflare: str(env, "TRUST_PROXY") === "cloudflare",
     maxPdfBytes: int(env, "MAX_PDF_MB", 50) * 1024 * 1024,
-    maxDirectorCommentsPerDay: int(env, "MAX_DIRECTOR_COMMENTS_PER_DAY", 500),
+    maxReviewerCommentsPerDay: int(env, "MAX_REVIEWER_COMMENTS_PER_DAY", 500),
     telegram,
     smtp,
     ownerEmail: str(env, "EMAIL_OWNER_TO"),
@@ -176,8 +176,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
-/** Hour of the directors' daily reply digests: DIGEST_HOUR, or 8:00 when unset. */
-export const directorDigestHour = (c: Config): number => c.digestHour ?? 8;
+/** Hour of the reviewers' daily reply digests: DIGEST_HOUR, or 8:00 when unset. */
+export const reviewerDigestHour = (c: Config): number => c.digestHour ?? 8;
 
 /** What is enabled, without any secret value. */
 export function describeConfig(c: Config): string {

@@ -9,8 +9,18 @@ import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mj
 const require = createRequire(import.meta.url);
 GlobalWorkerOptions.workerSrc = pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
 
-/** A PDF that can't be accepted; `message` is shown to the author. */
-export class PdfProblem extends Error {}
+/** A PDF that can't be accepted: `code` (open, pages, read) and a detail for the owner. */
+export class PdfProblem extends Error {
+  /**
+   * @param {"open" | "pages" | "read"} code
+   * @param {string} detail
+   */
+  constructor(code, detail) {
+    super(`${code}: ${detail}`);
+    this.code = code;
+    this.detail = detail;
+  }
+}
 
 /**
  * Joins pdf.js text items; undoes end-of-line hyphenation ("pala-\nbra" → "palabra").
@@ -44,11 +54,11 @@ export async function extractPages(data, maxPages) {
     doc = await task.promise;
   } catch (e) {
     await task.destroy();
-    throw new PdfProblem(`pdf.js no pudo abrir el PDF: ${/** @type {Error} */ (e).message}`);
+    throw new PdfProblem("open", /** @type {Error} */ (e).message);
   }
   try {
     if (doc.numPages < 1 || doc.numPages > maxPages) {
-      throw new PdfProblem(`El PDF debe tener entre 1 y ${maxPages} páginas.`);
+      throw new PdfProblem("pages", String(maxPages));
     }
     /** @type {string[]} */
     const pages = [];
@@ -61,7 +71,7 @@ export async function extractPages(data, maxPages) {
     return { pageCount: doc.numPages, pages };
   } catch (e) {
     if (e instanceof PdfProblem) throw e;
-    throw new PdfProblem(`pdf.js no pudo leer el PDF: ${/** @type {Error} */ (e).message}`);
+    throw new PdfProblem("read", /** @type {Error} */ (e).message);
   } finally {
     await task.destroy();
   }

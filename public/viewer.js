@@ -4,13 +4,18 @@
 // land in the same place at any zoom.
 
 import * as pdfjsLib from "/vendor/pdfjs/pdf.mjs";
-import { api, el, fmtDate } from "/static/common.js";
+import { api, el, fmtDate, t } from "/static/common.js";
+
+// `t` is also the usual name of a thread below: `tr` is the translator there.
+const tr = t;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.mjs";
 
 const body = document.body;
+const DOC = body.dataset.document;
 const VERSION = Number(body.dataset.version);
-const ROLE = body.dataset.role;
+const ARCHIVED = body.dataset.archived === "1";
+const DOC_API = `/api/documents/${encodeURIComponent(DOC)}`;
 const pagesEl = document.getElementById("pages");
 const listEl = document.getElementById("thread-list");
 const composer = document.getElementById("composer");
@@ -47,7 +52,7 @@ function layout() {
   );
   views = views.map((v) => {
     const vp = v.base.clone({ scale });
-    const div = el("div", { class: "page", "data-page": v.n, "aria-label": `Página ${v.n}` });
+    const div = el("div", { class: "page", "data-page": v.n, "aria-label": t("js.page_n", { n: v.n }) });
     div.style.width = `${vp.width}px`;
     div.style.height = `${vp.height}px`;
     div.style.setProperty("--scale-factor", String(scale));
@@ -101,7 +106,7 @@ function drawHighlights() {
     const cls = `hl ${t.status === "resolved" ? "hl-resolved" : ""}`;
     if (t.anchor === "point") {
       const r = t.rects[0];
-      const pin = el("button", { class: `pin ${t.status === "resolved" ? "hl-resolved" : ""}`, type: "button", title: excerpt(t), "aria-label": `Comentario ${t.id}` });
+      const pin = el("button", { class: `pin ${t.status === "resolved" ? "hl-resolved" : ""}`, type: "button", title: excerpt(t), "aria-label": tr("js.comment_n", { n: t.id }) });
       pin.style.left = `${r.x * 100}%`;
       pin.style.top = `${r.y * 100}%`;
       pin.addEventListener("click", (e) => {
@@ -173,15 +178,16 @@ function mergeRects(rects) {
   return out;
 }
 
-document.addEventListener("mouseup", () => setTimeout(updateSelectionButton, 0));
+if (!ARCHIVED) document.addEventListener("mouseup", () => setTimeout(updateSelectionButton, 0));
 // Touch screens select text without mouseup: follow the selection itself.
 let selTimer = 0;
 document.addEventListener("selectionchange", () => {
+  if (ARCHIVED) return;
   clearTimeout(selTimer);
   selTimer = setTimeout(updateSelectionButton, 300);
 });
 document.addEventListener("keyup", (e) => {
-  if (e.shiftKey) updateSelectionButton();
+  if (e.shiftKey && !ARCHIVED) updateSelectionButton();
 });
 
 function updateSelectionButton() {
@@ -201,7 +207,7 @@ function updateSelectionButton() {
   };
 }
 
-pointBtn.addEventListener("click", () => {
+pointBtn?.addEventListener("click", () => {
   pointMode = !pointMode;
   pointBtn.setAttribute("aria-pressed", String(pointMode));
   body.classList.toggle("point-mode", pointMode);
@@ -233,7 +239,10 @@ function onPageClick(ev, n, div) {
 
 function openComposer(a) {
   pending = a;
-  composerQuote.textContent = a.anchor === "text" ? `«${a.quote.length > 300 ? a.quote.slice(0, 299) + "…" : a.quote}» (página ${a.page})` : `Punto en la página ${a.page}`;
+  composerQuote.textContent =
+    a.anchor === "text"
+      ? t("js.quote_on_page", { quote: a.quote.length > 300 ? a.quote.slice(0, 299) + "…" : a.quote, page: a.page })
+      : t("js.point_on_page", { page: a.page });
   composer.hidden = false;
   composerForm.elements.body.value = "";
   composerForm.elements.body.focus();
@@ -251,7 +260,7 @@ composerForm.addEventListener("submit", async (e) => {
   btn.disabled = true;
   try {
     const { last, ...anchor } = pending;
-    const { thread } = await api("POST", "/api/threads", { version: VERSION, ...anchor, body: composerForm.elements.body.value });
+    const { thread } = await api("POST", `${DOC_API}/threads`, { version: VERSION, ...anchor, body: composerForm.elements.body.value });
     threads.push(thread);
     threads.sort((a, b) => a.page - b.page || a.id - b.id);
     composer.hidden = true;
@@ -270,27 +279,28 @@ composerForm.addEventListener("submit", async (e) => {
 // --- threads sidebar ---
 
 function author(c) {
-  return el("span", { class: "author" }, c.author.name, c.author.kind === "owner" ? el("span", { class: "tag tag-owner", text: "autor" }) : null);
+  const tag = c.author.kind === "owner" ? t("js.owner") : c.author.role;
+  return el("span", { class: "author" }, c.author.name, tag ? el("span", { class: `tag ${c.author.kind === "owner" ? "tag-owner" : "tag-role"}`, text: tag }) : null);
 }
 
-function commentNode(t, c) {
+function commentNode(th, c) {
   const node = el(
     "div",
-    { class: `comment ${c.deleted ? "deleted" : ""}`, id: `comentario-${c.id}` },
-    el("div", { class: "comment-head" }, author(c), el("time", { datetime: c.created_at, text: fmtDate(c.created_at) }), c.edited_at ? el("span", { class: "muted small", text: "(editado)" }) : null),
-    el("div", { class: "comment-body", html: c.body_html }),
+    { class: `comment ${c.deleted ? "deleted" : ""}`, id: `comment-${c.id}` },
+    el("div", { class: "comment-head" }, author(c), el("time", { datetime: c.created_at, text: fmtDate(c.created_at) }), c.edited_at ? el("span", { class: "muted small", text: t("js.edited") }) : null),
+    c.deleted ? el("div", { class: "comment-body" }, el("p", {}, el("em", { text: t("js.deleted") }))) : el("div", { class: "comment-body", html: c.body_html }),
   );
-  if (c.mine && !c.deleted) {
+  if (c.mine && !c.deleted && !ARCHIVED) {
     const actions = el(
       "div",
       { class: "comment-actions" },
-      el("button", { type: "button", class: "link", text: "Editar", onclick: () => editComment(node, t, c) }),
+      el("button", { type: "button", class: "link", text: tr("js.edit"), onclick: () => editComment(node, th, c) }),
       el("button", {
         type: "button",
         class: "link danger",
-        text: "Eliminar",
+        text: tr("js.delete"),
         onclick: async () => {
-          if (!confirm("¿Eliminar este comentario?")) return;
+          if (!confirm(tr("js.delete_confirm"))) return;
           await mutate(() => api("DELETE", `/api/comments/${c.id}`));
         },
       }),
@@ -300,14 +310,14 @@ function commentNode(t, c) {
   return node;
 }
 
-function editComment(node, t, c) {
+function editComment(node, th, c) {
   const ta = el("textarea", { rows: 4, maxlength: 10000 });
   ta.value = c.body ?? "";
   const form = el(
     "form",
     { class: "stack" },
     ta,
-    el("div", { class: "row" }, el("button", { type: "submit", text: "Guardar" }), el("button", { type: "button", class: "secondary", text: "Cancelar", onclick: () => renderThreads() })),
+    el("div", { class: "row" }, el("button", { type: "submit", text: t("js.save") }), el("button", { type: "button", class: "secondary", text: t("js.cancel"), onclick: () => renderThreads() })),
   );
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -331,36 +341,36 @@ async function mutate(fn) {
 }
 
 function threadNode(t) {
-  const reply = el("textarea", { rows: 1, maxlength: 10000, placeholder: "Responder…", "aria-label": "Respuesta" });
-  const replyForm = el("form", { class: "reply" }, reply, el("button", { type: "submit", text: "Responder" }));
-  replyForm.addEventListener("submit", async (e) => {
+  const reply = el("textarea", { rows: 1, maxlength: 10000, placeholder: tr("js.reply_placeholder"), "aria-label": tr("js.reply_label") });
+  const replyForm = ARCHIVED ? null : el("form", { class: "reply" }, reply, el("button", { type: "submit", text: tr("js.reply") }));
+  replyForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!reply.value.trim()) return;
     await mutate(() => api("POST", `/api/threads/${t.id}/comments`, { body: reply.value }));
   });
-  // Only the owner and the director who opened a thread may resolve it; anyone may reopen.
+  // Only the owner and the reviewer who opened a thread may resolve it; anyone may reopen.
   const toggle =
-    t.status === "open" && !t.can_resolve
+    ARCHIVED || (t.status === "open" && !t.can_resolve)
       ? null
       : el("button", {
           type: "button",
           class: "secondary small-btn",
-          text: t.status === "open" ? "Marcar resuelto" : "Reabrir",
+          text: t.status === "open" ? tr("js.resolve") : tr("js.reopen"),
           onclick: () => mutate(() => api("POST", `/api/threads/${t.id}/${t.status === "open" ? "resolve" : "reopen"}`)),
         });
   const node = el(
     "article",
-    { class: `thread ${t.status}`, id: `hilo-${t.id}`, tabindex: "-1" },
+    { class: `thread ${t.status}`, id: `thread-${t.id}`, tabindex: "-1" },
     el(
       "header",
       {},
-      el("button", { type: "button", class: "link page-link", text: `Página ${t.page}`, onclick: () => scrollToThread(t) }),
-      t.chapter ? el("span", { class: "muted small", text: t.chapter.title }) : null,
-      el("span", { class: `tag tag-${t.status === "open" ? "open" : "resolved"}`, text: t.status === "open" ? "Abierto" : "Resuelto" }),
+      el("button", { type: "button", class: "link page-link", text: tr("js.page_n", { n: t.page }), onclick: () => scrollToThread(t) }),
+      t.section ? el("span", { class: "muted small", text: t.section.title }) : null,
+      el("span", { class: `tag tag-${t.status === "open" ? "open" : "resolved"}`, text: t.status === "open" ? tr("js.open") : tr("js.resolved") }),
     ),
-    t.quote ? el("blockquote", { class: "quote", text: t.quote }) : el("p", { class: "muted small", text: "Comentario sobre un punto de la página." }),
+    t.quote ? el("blockquote", { class: "quote", text: t.quote }) : el("p", { class: "muted small", text: tr("js.point_comment") }),
     ...t.comments.map((c) => commentNode(t, c)),
-    t.status === "resolved" && t.resolved_by ? el("p", { class: "muted small", text: `Resuelto por ${t.resolved_by}` }) : null,
+    t.status === "resolved" && t.resolved_by ? el("p", { class: "muted small", text: tr("js.resolved_by", { name: t.resolved_by }) }) : null,
     toggle ? el("div", { class: "thread-actions" }, toggle) : null,
     replyForm,
   );
@@ -370,14 +380,14 @@ function threadNode(t) {
 function renderThreads() {
   const list = visibleThreads();
   if (list.length === 0) {
-    listEl.replaceChildren(el("p", { class: "muted", text: threads.length ? "No hay comentarios abiertos." : "Aún no hay comentarios en esta versión. Seleccione texto del PDF para comentar." }));
+    listEl.replaceChildren(el("p", { class: "muted", text: threads.length ? t("js.no_open") : ARCHIVED ? t("js.no_comments_archived") : t("js.no_comments") }));
     return;
   }
   listEl.replaceChildren(...list.map(threadNode));
 }
 
 function focusThread(id, flash = true) {
-  const node = document.getElementById(`hilo-${id}`);
+  const node = document.getElementById(`thread-${id}`);
   if (!node) return;
   node.scrollIntoView({ block: "nearest", behavior: "smooth" });
   if (flash) {
@@ -398,7 +408,7 @@ function scrollToThread(t) {
 // --- controls ---
 
 document.getElementById("version-select").addEventListener("change", (e) => {
-  location.href = `/v/${e.target.value}`;
+  location.href = `/d/${encodeURIComponent(DOC)}/v/${e.target.value}`;
 });
 showResolved.addEventListener("change", () => {
   renderThreads();
@@ -417,10 +427,10 @@ document.getElementById("zoom-out").addEventListener("click", () => {
 
 async function start() {
   const [{ threads: list }] = await Promise.all([
-    api("GET", `/api/threads?version=${VERSION}&status=all`),
+    api("GET", `${DOC_API}/threads?version=${VERSION}&status=all`),
     (async () => {
       doc = await pdfjsLib.getDocument({
-        url: `/api/versions/${VERSION}/pdf`,
+        url: `${DOC_API}/versions/${VERSION}/pdf`,
         withCredentials: true,
         disableRange: true,
         disableStream: true,
@@ -442,7 +452,7 @@ async function start() {
   scale = fitScale();
   layout();
   renderThreads();
-  const m = /^#hilo-(\d+)$/.exec(location.hash);
+  const m = /^#thread-(\d+)$/.exec(location.hash);
   if (m) {
     const t = threads.find((x) => x.id === Number(m[1]));
     if (t) {
@@ -460,7 +470,5 @@ async function start() {
 
 start().catch((err) => {
   console.error(err);
-  pagesEl.replaceChildren(el("p", { class: "error", text: `No se pudo cargar el PDF: ${err.message}` }));
+  pagesEl.replaceChildren(el("p", { class: "error", text: t("js.pdf_failed", { error: err.message }) }));
 });
-
-void ROLE;

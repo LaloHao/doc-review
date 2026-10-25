@@ -1,16 +1,24 @@
 // Notifications. Channels are independent: Telegram (owner), email to the owner,
-// and opt-in emails to directors (a new version; replies in their threads, at
-// once or as a daily digest). Each one is off unless configured. Messages never
-// carry secrets: links point to the public URL, and a director's personal link
-// goes by email only when the owner asks for it. Failures are logged (without
-// credentials) and never break the request.
+// and opt-in emails to reviewers (a new version; replies in their threads, at
+// once or as a daily digest). Each one is off unless configured. Messages are in
+// the document's language and never carry secrets: links point to the public
+// URL, and a reviewer's personal link goes by email only when the owner asks for
+// it. Failures are logged (without credentials) and never break the request.
 
 import type { Config } from "../config.js";
-import type { CommentOut, Director, ThreadOut, Version } from "../repo.js";
+import { translator, type Lang, type Tr } from "../i18n/index.js";
+import type { CommentOut, Person, ThreadOut, Version } from "../repo.js";
 import { excerpt } from "../text.js";
 
 /** Names and titles: one line, without control or bidi characters. */
 const name = (s: string | null | undefined) => excerpt(s ?? "", 300);
+
+/** What a notification needs to know about the document. */
+export interface DocInfo {
+  slug: string;
+  title: string;
+  language: Lang;
+}
 
 export interface Mail {
   to: string;
@@ -26,10 +34,7 @@ export interface Telegram {
   send(text: string): Promise<void>;
 }
 
-export function telegramClient(
-  c: { botToken: string; chatId: string },
-  fetchImpl: typeof fetch = fetch,
-): Telegram {
+export function telegramClient(c: { botToken: string; chatId: string }, fetchImpl: typeof fetch = fetch): Telegram {
   return {
     async send(text) {
       const res = await fetchImpl(`https://api.telegram.org/bot${c.botToken}/sendMessage`, {
@@ -69,7 +74,6 @@ export async function smtpMailer(c: NonNullable<Config["smtp"]>): Promise<Mailer
 
 export interface NotifierDeps {
   publicUrl: string;
-  thesisTitle: () => Promise<string>;
   telegram: Telegram | null;
   mailer: Mailer | null;
   ownerEmail: string;
@@ -77,40 +81,30 @@ export interface NotifierDeps {
   log?: (msg: string) => void;
 }
 
-export function threadUrl(publicUrl: string, t: { version: number; id: number }): string {
-  return `${publicUrl}/v/${t.version}#hilo-${t.id}`;
+export function threadUrl(publicUrl: string, t: { document: string; version: number; id: number }): string {
+  return `${publicUrl}/d/${t.document}/v/${t.version}#thread-${t.id}`;
 }
 
-function commentText(t: ThreadOut, commentId: number, publicUrl: string): { title: string; body: string } {
-  const c = t.comments.find((x) => x.id === commentId) ?? t.comments[t.comments.length - 1]!;
-  const isReply = t.comments[0]?.id !== c.id;
-  const where = [`versión ${t.version}`, `página ${t.page}`, t.section ? name(t.section.title) : null].filter(Boolean).join(", ");
-  const title = `${isReply ? "Respuesta" : "Comentario nuevo"} de ${name(c.author.name)}`;
-  const lines = [
-    `${title} (${where})`,
-    t.quote ? `«${excerpt(t.quote, 200)}»` : null,
-    "",
-    excerpt(c.body ?? "", 1500),
-    "",
-    threadUrl(publicUrl, t),
-  ].filter((l) => l !== null);
-  return { title, body: lines.join("\n") };
+/** "[Document title] subject", the title shortened. */
+const subject = (doc: DocInfo, text: string) => `[${excerpt(doc.title, 60)}] ${text}`;
+
+function where(tr: Tr, t: ThreadOut): string {
+  return [tr("mail.where_version", { n: t.version }), tr("mail.where_page", { n: t.page }), t.section ? name(t.section.title) : null]
+    .filter(Boolean)
+    .join(", ");
 }
 
-const directorFooter = [
-  "",
-  "Si el sitio le pide entrar, use su enlace personal (el que recibió por separado).",
-  "Puede cambiar o desactivar estos avisos en «Notificaciones», en la página de la tesis.",
-];
+const authorName = (c: { author: { name: string; role: string } }) =>
+  c.author.role ? `${name(c.author.name)} (${name(c.author.role)})` : name(c.author.name);
 
 export class Notifier {
   constructor(private readonly d: NotifierDeps) {}
 
-  get enabled(): { telegram: boolean; ownerEmail: boolean; directorEmail: boolean } {
+  get enabled(): { telegram: boolean; ownerEmail: boolean; reviewerEmail: boolean } {
     return {
       telegram: this.d.telegram !== null,
       ownerEmail: this.d.mailer !== null && this.d.ownerEmail !== "",
-      directorEmail: this.d.mailer !== null,
+      reviewerEmail: this.d.mailer !== null,
     };
   }
 
@@ -118,135 +112,148 @@ export class Notifier {
     (this.d.log ?? console.error)(msg);
   }
 
+  private url(t: ThreadOut): string {
+    return threadUrl(this.d.publicUrl, t);
+  }
+
+  private footer(tr: Tr): string[] {
+    return ["", tr("mail.reviewer_footer_link"), tr("mail.reviewer_footer_settings", { url: `${this.d.publicUrl}/notifications` })];
+  }
+
   /** Sends on every owner channel; returns how many succeeded and failed. */
-  private async toOwner(subject: string, text: string): Promise<{ ok: number; failed: number }> {
+  private async toOwner(subj: string, text: string): Promise<{ ok: number; failed: number }> {
     const jobs: Promise<void>[] = [];
     if (this.d.telegram) jobs.push(this.d.telegram.send(text));
-    if (this.d.mailer && this.d.ownerEmail) jobs.push(this.d.mailer.send({ to: this.d.ownerEmail, subject, text }));
+    if (this.d.mailer && this.d.ownerEmail) jobs.push(this.d.mailer.send({ to: this.d.ownerEmail, subject: subj, text }));
     const results = await Promise.allSettled(jobs);
     for (const r of results) if (r.status === "rejected") this.log(`notification failed: ${(r.reason as Error).message}`);
     const failed = results.filter((r) => r.status === "rejected").length;
     return { ok: results.length - failed, failed };
   }
 
-  /** A director wrote a comment or reply. Owner-authored comments don't notify. */
-  async commentCreated(thread: ThreadOut, commentId: number): Promise<void> {
+  /** A reviewer wrote a comment or reply. Owner-authored comments don't notify. */
+  async commentCreated(doc: DocInfo, thread: ThreadOut, commentId: number): Promise<void> {
     if (!this.d.instant) return;
     const c = thread.comments.find((x) => x.id === commentId);
     if (!c || c.author.kind === "owner") return;
-    const { title, body } = commentText(thread, commentId, this.d.publicUrl);
-    await this.toOwner(`[Revisión de tesis] ${title}`, body);
-  }
-
-  /** A director edited a comment: the owner sees what changed. */
-  async commentEdited(thread: ThreadOut, commentId: number, previous: string): Promise<void> {
-    if (!this.d.instant) return;
-    const c = thread.comments.find((x) => x.id === commentId);
-    if (!c || c.author.kind === "owner") return;
-    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.section ? name(thread.section.title) : null].filter(Boolean).join(", ");
-    const title = `${name(c.author.name)} editó un comentario`;
+    const tr = translator(doc.language);
+    const isReply = thread.comments[0]?.id !== c.id;
+    const title = tr(isReply ? "mail.reply_from" : "mail.comment_from", { name: authorName(c) });
     const text = [
-      `${title} (${where})`,
+      `${title} (${where(tr, thread)})`,
+      name(doc.title),
+      thread.quote ? `«${excerpt(thread.quote, 200)}»` : null,
       "",
-      "Antes:",
-      excerpt(previous, 1000),
-      "",
-      "Ahora:",
       excerpt(c.body ?? "", 1500),
       "",
-      threadUrl(this.d.publicUrl, thread),
+      this.url(thread),
+    ].filter((l) => l !== null);
+    await this.toOwner(subject(doc, title), text.join("\n"));
+  }
+
+  /** A reviewer edited a comment: the owner sees what changed. */
+  async commentEdited(doc: DocInfo, thread: ThreadOut, commentId: number, previous: string): Promise<void> {
+    if (!this.d.instant) return;
+    const c = thread.comments.find((x) => x.id === commentId);
+    if (!c || c.author.kind === "owner") return;
+    const tr = translator(doc.language);
+    const title = tr("mail.edited", { name: authorName(c) });
+    const text = [
+      `${title} (${where(tr, thread)})`,
+      name(doc.title),
+      "",
+      tr("mail.before"),
+      excerpt(previous, 1000),
+      "",
+      tr("mail.now"),
+      excerpt(c.body ?? "", 1500),
+      "",
+      this.url(thread),
     ].join("\n");
-    await this.toOwner(`[Revisión de tesis] ${title}`, text);
+    await this.toOwner(subject(doc, title), text);
   }
 
   /**
-   * Daily summary of what directors wrote since `since`. "failed" when every
-   * channel failed (the caller retries later); "empty" when there was nothing.
+   * A document's daily summary of what reviewers wrote since `since`. "failed"
+   * when every channel failed (the caller retries later); "empty" when there was
+   * nothing.
    */
-  async digest(threads: ThreadOut[], since: Date): Promise<"sent" | "empty" | "failed"> {
+  async digest(doc: DocInfo, threads: ThreadOut[], since: Date): Promise<"sent" | "empty" | "failed"> {
     const items = threads.flatMap((t) =>
       t.comments
-        .filter((c) => c.author.kind === "director" && !c.deleted && Date.parse(c.created_at) >= since.getTime())
+        .filter((c) => c.author.kind === "reviewer" && !c.deleted && Date.parse(c.created_at) >= since.getTime())
         .map((c) => ({ t, c })),
     );
     if (items.length === 0) return "empty";
-    const lines = [`Resumen diario: ${items.length} comentario(s) nuevo(s) de tus directores.`, ""];
+    const tr = translator(doc.language);
+    const lines = [tr("mail.digest_intro", { n: items.length, title: name(doc.title) }), ""];
     for (const { t, c } of items.slice(0, 50)) {
-      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.section ? `, ${name(t.section.title)}` : ""}`);
+      lines.push(`• ${authorName(c)} — ${where(tr, t)}`);
       lines.push(`  ${excerpt(c.body ?? "", 200)}`);
-      lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
+      lines.push(`  ${this.url(t)}`);
     }
-    if (items.length > 50) lines.push(`… y ${items.length - 50} más.`);
-    const r = await this.toOwner(`[Revisión de tesis] Resumen: ${items.length} comentario(s)`, lines.join("\n"));
+    if (items.length > 50) lines.push(tr("mail.and_more", { n: items.length - 50 }));
+    const r = await this.toOwner(subject(doc, tr("mail.digest_subject", { n: items.length })), lines.join("\n"));
     return r.failed > 0 && r.ok === 0 ? "failed" : "sent";
   }
 
-  /** Someone else replied in a thread a director takes part in (no secret link). */
-  async replyToDirector(director: Director, thread: ThreadOut, comment: CommentOut): Promise<void> {
-    if (!this.d.mailer || !director.email) return;
-    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.section ? name(thread.section.title) : null].filter(Boolean).join(", ");
+  /** Someone else replied in a thread a reviewer takes part in (no secret link). */
+  async replyToReviewer(doc: DocInfo, person: Person, thread: ThreadOut, comment: CommentOut): Promise<void> {
+    if (!this.d.mailer || !person.email) return;
+    const tr = translator(doc.language);
     await this.d.mailer.send({
-      to: director.email,
-      subject: `[Revisión de tesis] Respuesta de ${name(comment.author.name)}`,
+      to: person.email,
+      subject: subject(doc, tr("mail.reply_from", { name: authorName(comment) })),
       text: [
-        `Estimado(a) ${name(director.name)}:`,
+        tr("mail.greeting", { name: name(person.name) }),
         "",
-        `${name(comment.author.name)} respondió en un hilo en el que usted participa (${where}).`,
+        tr("mail.reply_body", { name: authorName(comment), where: where(tr, thread), title: name(doc.title) }),
         thread.quote ? `«${excerpt(thread.quote, 200)}»` : null,
         "",
         excerpt(comment.body ?? "", 1500),
         "",
-        `Ver el hilo: ${threadUrl(this.d.publicUrl, thread)}`,
-        ...directorFooter,
+        tr("mail.see_thread", { url: this.url(thread) }),
+        ...this.footer(tr),
       ]
         .filter((l) => l !== null)
         .join("\n"),
     });
   }
 
-  /** A director's daily digest of replies. Throws if the email can't be sent. */
-  async directorDigest(director: Director, items: { thread: ThreadOut; comment: CommentOut }[]): Promise<boolean> {
-    if (!this.d.mailer || !director.email || items.length === 0) return false;
-    const lines = [
-      `Estimado(a) ${name(director.name)}:`,
-      "",
-      `Hay ${items.length} respuesta(s) nueva(s) en hilos en los que usted participa.`,
-      "",
-    ];
+  /** A reviewer's daily digest of replies in one document. Throws if the email can't be sent. */
+  async reviewerDigest(doc: DocInfo, person: Person, items: { thread: ThreadOut; comment: CommentOut }[]): Promise<boolean> {
+    if (!this.d.mailer || !person.email || items.length === 0) return false;
+    const tr = translator(doc.language);
+    const lines = [tr("mail.greeting", { name: name(person.name) }), "", tr("mail.reviewer_digest_intro", { n: items.length, title: name(doc.title) }), ""];
     for (const { thread: t, comment: c } of items.slice(0, 50)) {
-      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.section ? `, ${name(t.section.title)}` : ""}`);
+      lines.push(`• ${authorName(c)} — ${where(tr, t)}`);
       lines.push(`  ${excerpt(c.body ?? "", 300)}`);
-      lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
+      lines.push(`  ${this.url(t)}`);
     }
-    if (items.length > 50) lines.push(`… y ${items.length - 50} más.`);
-    lines.push(...directorFooter);
-    await this.d.mailer.send({
-      to: director.email,
-      subject: `[Revisión de tesis] Resumen: ${items.length} respuesta(s)`,
-      text: lines.join("\n"),
-    });
+    if (items.length > 50) lines.push(tr("mail.and_more", { n: items.length - 50 }));
+    lines.push(...this.footer(tr));
+    await this.d.mailer.send({ to: person.email, subject: subject(doc, tr("mail.reviewer_digest_subject", { n: items.length })), text: lines.join("\n") });
     return true;
   }
 
-  /** New version published: email the directors that opted in (no secret link). */
-  async versionPublished(version: Version, directors: Director[]): Promise<void> {
+  /** New version published: email the document's reviewers that opted in (no secret link). */
+  async versionPublished(doc: DocInfo, version: Version, people: Person[]): Promise<void> {
     if (!this.d.mailer) return;
-    const title = name(await this.d.thesisTitle());
-    const to = directors.filter((d) => d.notify_versions && d.email && !d.revoked_at);
+    const tr = translator(doc.language);
+    const to = people.filter((p) => p.notify_versions && p.email);
     const results = await Promise.allSettled(
-      to.map((d) =>
+      to.map((p) =>
         this.d.mailer!.send({
-          to: d.email!,
-          subject: `Nueva versión de la tesis (v${version.number})`,
+          to: p.email!,
+          subject: subject(doc, tr("mail.version_subject", { n: version.number })),
           text: [
-            `Estimado(a) ${name(d.name)}:`,
+            tr("mail.greeting", { name: name(p.name) }),
             "",
-            `Se publicó la versión ${version.number} de la tesis «${title}».`,
-            version.note ? `\nNota de la versión:\n${excerpt(version.note, 2000)}\n` : "",
-            `Puede revisarla en ${this.d.publicUrl}/ desde el navegador donde abrió su enlace personal.`,
-            "Si no tiene ese navegador a mano, use el enlace personal que se le envió por separado.",
-            "",
-            "Gracias por su revisión.",
+            tr("mail.version_body", { n: version.number, title: name(doc.title) }),
+            version.note ? `\n${tr("mail.version_note")}\n${excerpt(version.note, 2000)}\n` : "",
+            tr("mail.version_where", { url: `${this.d.publicUrl}/d/${doc.slug}/v/${version.number}` }),
+            tr("mail.version_link_hint"),
+            ...this.footer(tr),
           ].join("\n"),
         }),
       ),
@@ -254,23 +261,23 @@ export class Notifier {
     for (const r of results) if (r.status === "rejected") this.log(`version email failed: ${(r.reason as Error).message}`);
   }
 
-  /** Sends a director their personal link (only when the owner explicitly asks). */
-  async sendLink(director: Director, link: string): Promise<void> {
-    if (!this.d.mailer) throw new Error("El correo no está configurado.");
-    if (!director.email) throw new Error("El director no tiene correo registrado.");
-    const title = name(await this.d.thesisTitle());
+  /** Sends a reviewer their personal link to a document (only when the owner explicitly asks). */
+  async sendLink(doc: DocInfo, person: Person, link: string): Promise<void> {
+    const tr = translator(doc.language);
+    if (!this.d.mailer) throw new Error(tr("mail.not_configured"));
+    if (!person.email) throw new Error(tr("mail.no_address"));
     await this.d.mailer.send({
-      to: director.email,
-      subject: "Su enlace para revisar la tesis",
+      to: person.email,
+      subject: subject(doc, tr("mail.link_subject")),
       text: [
-        `Estimado(a) ${name(director.name)}:`,
+        tr("mail.greeting", { name: name(person.name) }),
         "",
-        `Este es su enlace personal para revisar y comentar la tesis «${title}»:`,
+        tr("mail.link_body", { title: name(doc.title) }),
         "",
         link,
         "",
-        "El enlace es personal: identifica sus comentarios con su nombre. No lo comparta.",
-        "Al abrirlo, el navegador recordará su acceso.",
+        tr("mail.link_personal"),
+        tr("mail.link_remember"),
       ].join("\n"),
     });
   }

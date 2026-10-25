@@ -2,32 +2,65 @@
 
 import type { Db, Queryable } from "./db/db.js";
 import { sectionOfPage, type SectionPages, type VersionDiff } from "./diff.js";
+import type { Lang } from "./i18n/index.js";
 import type { Progress } from "./progress.js";
 import { newSecret, sha256Hex } from "./server/crypto.js";
 import { renderComment } from "./text.js";
 
-export type AuthorKind = "owner" | "director";
+export type AuthorKind = "owner" | "reviewer";
 
-/** When a director hears about replies in their threads. */
+/** When a reviewer hears about replies in their threads. */
 export type ReplyNotify = "instant" | "daily" | "never";
 export const REPLY_NOTIFY: readonly ReplyNotify[] = ["instant", "daily", "never"];
 
-export interface Director {
+export type Visibility = "all" | "own";
+export const VISIBILITIES: readonly Visibility[] = ["all", "own"];
+
+export interface Document {
+  id: number;
+  slug: string;
+  title: string;
+  language: Lang;
+  visibility: Visibility;
+  default_role: string;
+  archived_at: Date | null;
+  created_at: Date;
+}
+
+export interface Person {
   id: number;
   name: string;
-  role: string;
   email: string | null;
   notify_versions: boolean;
   notify_replies: ReplyNotify;
+  created_at: Date;
+  last_seen_at: Date | null;
+}
+
+export interface Invitation {
+  id: number;
+  document_id: number;
+  person_id: number;
+  role: string;
   created_at: Date;
   rotated_at: Date | null;
   revoked_at: Date | null;
   last_seen_at: Date | null;
 }
 
+/** An invitation with its person (for a document's reviewer list). */
+export interface InvitationWithPerson extends Invitation {
+  person: Person;
+}
+
+/** An invitation with its document (for a person's list of documents). */
+export interface InvitationWithDocument extends Invitation {
+  document: Document;
+}
+
 export interface Session {
   kind: AuthorKind;
-  director: Director | null;
+  person: Person | null;
   csrf: string;
   idHash: string;
   /** The expiry was just extended: the cookie's Max-Age should be too. */
@@ -36,6 +69,7 @@ export interface Session {
 
 export interface Version {
   id: number;
+  document_id: number;
   number: number;
   title: string;
   note: string;
@@ -55,14 +89,25 @@ export interface Rect {
   h: number;
 }
 
+/** Who is looking: the owner, or a reviewer (a person). */
 export interface Viewer {
   kind: AuthorKind;
-  directorId: number | null;
+  personId: number | null;
+}
+
+export const OWNER: Viewer = { kind: "owner", personId: null };
+
+export interface Author {
+  kind: AuthorKind;
+  name: string;
+  person_id: number | null;
+  /** The person's role label in this document ("" for none or the owner). */
+  role: string;
 }
 
 export interface CommentOut {
   id: number;
-  author: { kind: AuthorKind; name: string; director_id: number | null };
+  author: Author;
   body: string | null;
   body_html: string;
   created_at: string;
@@ -73,6 +118,7 @@ export interface CommentOut {
 
 export interface ThreadOut {
   id: number;
+  document: string;
   version: number;
   page: number;
   anchor: "text" | "point";
@@ -80,28 +126,61 @@ export interface ThreadOut {
   rects: Rect[];
   status: "open" | "resolved";
   resolved_at: string | null;
+  /** Who resolved it (null when hidden by the visibility setting). */
   resolved_by: string | null;
   section: { id: string; title: string } | null;
-  author: { kind: AuthorKind; name: string; director_id: number | null };
+  author: Author;
   created_at: string;
   updated_at: string;
-  /** The viewer may mark it resolved: the owner, or the director who opened it. */
+  /** The viewer may mark it resolved: the owner, or the reviewer who opened it. */
   can_resolve: boolean;
   comments: CommentOut[];
 }
 
-export type Visibility = "all" | "own";
+export interface DocumentSummary {
+  document: Document;
+  latest: Version | null;
+  versions: number;
+  open_threads: number;
+  reviewers: number;
+}
 
-const DIRECTOR_COLS =
-  "id, name, role, email, notify_versions, notify_replies, created_at, rotated_at, revoked_at, last_seen_at";
+const DOC_COLS = "id, slug, title, language, visibility, default_role, archived_at, created_at";
+const PERSON_COLS = "id, name, email, notify_versions, notify_replies, created_at, last_seen_at";
+const INV_COLS = "id, document_id, person_id, role, created_at, rotated_at, revoked_at, last_seen_at";
+const prefixed = (cols: string, p: string) =>
+  cols
+    .split(", ")
+    .map((c) => `${p}.${c}`)
+    .join(", ");
+const aliased = (cols: string, table: string, p: string) =>
+  cols
+    .split(", ")
+    .map((c) => `${table}.${c} as ${p}${c}`)
+    .join(", ");
 
 const iso = (d: Date | string | null | undefined): string | null =>
   d === null || d === undefined ? null : new Date(d).toISOString();
+
+/** The `p`-prefixed columns of a joined row, without the prefix. */
+function split<T>(row: Record<string, unknown>, p: string): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) if (k.startsWith(p)) out[k.slice(p.length)] = v;
+  return out as T;
+}
+
+function inv(r: Record<string, unknown>): Invitation {
+  const { id, document_id, person_id, role, created_at, rotated_at, revoked_at, last_seen_at } = r as unknown as Invitation;
+  return { id, document_id, person_id, role, created_at, rotated_at, revoked_at, last_seen_at };
+}
 
 /** Fingerprint of the owner token hash, stored in owner sessions ("" = no owner access). */
 export function ownerSessionFingerprint(ownerTokenSha256: string): string {
   return ownerTokenSha256 ? sha256Hex(`owner-session:${ownerTokenSha256}`).slice(0, 32) : "";
 }
+
+/** Link secrets and session ids: 32 random bytes, base64url. */
+export const SECRET_RE = /^[A-Za-z0-9_-]{43}$/;
 
 export class Repo {
   constructor(
@@ -111,121 +190,279 @@ export class Repo {
     private readonly ownerFp = "",
   ) {}
 
-  // --- directors ---
+  // --- documents ---
 
-  async createDirector(input: {
-    name: string;
-    role: string;
-    email: string | null;
-    notify_versions: boolean;
-    notify_replies?: ReplyNotify;
-  }): Promise<{ director: Director; secret: string }> {
-    const secret = newSecret(32);
-    const [director] = await this.db.query<Director>(
-      `insert into directors (name, role, email, notify_versions, notify_replies, token_hash)
-       values ($1, $2, $3, $4, $5, $6) returning ${DIRECTOR_COLS}`,
-      [input.name, input.role, input.email, input.notify_versions, input.notify_replies ?? "never", sha256Hex(secret)],
+  /** Creates a document; null if the slug is taken. */
+  async createDocument(input: Pick<Document, "slug" | "title" | "language" | "visibility" | "default_role">): Promise<Document | null> {
+    const [d] = await this.db.query<Document>(
+      `insert into documents (slug, title, language, visibility, default_role) values ($1, $2, $3, $4, $5)
+       on conflict (slug) do nothing returning ${DOC_COLS}`,
+      [input.slug, input.title, input.language, input.visibility, input.default_role],
     );
-    return { director: director!, secret };
-  }
-
-  listDirectors(): Promise<Director[]> {
-    return this.db.query<Director>(`select ${DIRECTOR_COLS} from directors order by revoked_at nulls first, id`);
-  }
-
-  async getDirector(id: number): Promise<Director | null> {
-    const [d] = await this.db.query<Director>(`select ${DIRECTOR_COLS} from directors where id = $1`, [id]);
     return d ?? null;
   }
 
-  async updateDirector(
+  listDocuments(): Promise<Document[]> {
+    return this.db.query<Document>(`select ${DOC_COLS} from documents order by archived_at nulls first, lower(title), id`);
+  }
+
+  async documentBySlug(slug: string): Promise<Document | null> {
+    if (!/^[a-z0-9-]{1,63}$/.test(slug)) return null;
+    const [d] = await this.db.query<Document>(`select ${DOC_COLS} from documents where slug = $1`, [slug]);
+    return d ?? null;
+  }
+
+  async getDocument(id: number): Promise<Document | null> {
+    const [d] = await this.db.query<Document>(`select ${DOC_COLS} from documents where id = $1`, [id]);
+    return d ?? null;
+  }
+
+  /** Updates a document; "taken" if the new slug belongs to another one. */
+  async updateDocument(
     id: number,
-    patch: Partial<Pick<Director, "name" | "role" | "email" | "notify_versions" | "notify_replies">>,
-  ): Promise<Director | null> {
-    const cur = await this.getDirector(id);
+    patch: Partial<Pick<Document, "slug" | "title" | "language" | "visibility" | "default_role">>,
+  ): Promise<Document | null | "taken"> {
+    const cur = await this.getDocument(id);
     if (!cur) return null;
-    const next = { ...cur, ...patch };
-    const [d] = await this.db.query<Director>(
-      `update directors set name = $2, role = $3, email = $4, notify_versions = $5, notify_replies = $6
-       where id = $1 returning ${DIRECTOR_COLS}`,
-      [id, next.name, next.role, next.email, next.notify_versions, next.notify_replies],
+    const n = { ...cur, ...patch };
+    const [d] = await this.db.query<Document>(
+      `update documents set slug = $2, title = $3, language = $4, visibility = $5, default_role = $6
+       where id = $1 and not exists (select 1 from documents where slug = $2 and id <> $1)
+       returning ${DOC_COLS}`,
+      [id, n.slug, n.title, n.language, n.visibility, n.default_role],
+    );
+    return d ?? "taken";
+  }
+
+  async setArchived(id: number, archived: boolean): Promise<Document | null> {
+    const [d] = await this.db.query<Document>(
+      `update documents set archived_at = ${archived ? "coalesce(archived_at, now())" : "null"} where id = $1 returning ${DOC_COLS}`,
+      [id],
     );
     return d ?? null;
   }
 
-  /** New secret for the link; the old link and its sessions stop working. */
-  async rotateDirector(id: number): Promise<{ director: Director; secret: string } | null> {
+  /** Documents with their latest version and counts (the owner's dashboard). */
+  async documentSummaries(docs?: Document[]): Promise<DocumentSummary[]> {
+    const list = docs ?? (await this.listDocuments());
+    if (list.length === 0) return [];
+    const ids = list.map((d) => d.id);
+    const latest = await this.db.query<Version>(
+      `select distinct on (document_id) * from versions where document_id = any($1::int[]) order by document_id, number desc`,
+      [ids],
+    );
+    const counts = await this.db.query<{ document_id: number; versions: number; open: number; reviewers: number }>(
+      `select d.id as document_id,
+              (select count(*)::int from versions v where v.document_id = d.id) as versions,
+              (select count(*)::int from threads t where t.document_id = d.id and t.status = 'open') as open,
+              (select count(*)::int from invitations i where i.document_id = d.id and i.revoked_at is null) as reviewers
+       from documents d where d.id = any($1::int[])`,
+      [ids],
+    );
+    const byDoc = new Map(latest.map((v) => [v.document_id, v]));
+    const countBy = new Map(counts.map((c) => [c.document_id, c]));
+    return list.map((document) => ({
+      document,
+      latest: byDoc.get(document.id) ?? null,
+      versions: countBy.get(document.id)?.versions ?? 0,
+      open_threads: countBy.get(document.id)?.open ?? 0,
+      reviewers: countBy.get(document.id)?.reviewers ?? 0,
+    }));
+  }
+
+  // --- people ---
+
+  async createPerson(input: Pick<Person, "name" | "email"> & Partial<Pick<Person, "notify_versions" | "notify_replies">>): Promise<Person> {
+    const [p] = await this.db.query<Person>(
+      `insert into people (name, email, notify_versions, notify_replies) values ($1, $2, $3, $4) returning ${PERSON_COLS}`,
+      [input.name, input.email, input.notify_versions ?? false, input.notify_replies ?? "never"],
+    );
+    return p!;
+  }
+
+  listPeople(): Promise<Person[]> {
+    return this.db.query<Person>(`select ${PERSON_COLS} from people order by lower(name), id`);
+  }
+
+  async getPerson(id: number): Promise<Person | null> {
+    const [p] = await this.db.query<Person>(`select ${PERSON_COLS} from people where id = $1`, [id]);
+    return p ?? null;
+  }
+
+  async updatePerson(id: number, patch: Partial<Pick<Person, "name" | "email" | "notify_versions" | "notify_replies">>): Promise<Person | null> {
+    const cur = await this.getPerson(id);
+    if (!cur) return null;
+    const n = { ...cur, ...patch };
+    const [p] = await this.db.query<Person>(
+      `update people set name = $2, email = $3, notify_versions = $4, notify_replies = $5 where id = $1 returning ${PERSON_COLS}`,
+      [id, n.name, n.email, n.notify_versions, n.notify_replies],
+    );
+    return p ?? null;
+  }
+
+  // --- invitations ---
+
+  /** Invites a person to a document; null if they already have an invitation there. */
+  async createInvitation(documentId: number, personId: number, role: string): Promise<{ invitation: Invitation; secret: string } | null> {
+    const secret = newSecret(32);
+    const [i] = await this.db.query<Invitation>(
+      `insert into invitations (document_id, person_id, role, token_hash) values ($1, $2, $3, $4)
+       on conflict (document_id, person_id) do nothing returning ${INV_COLS}`,
+      [documentId, personId, role, sha256Hex(secret)],
+    );
+    return i ? { invitation: i, secret } : null;
+  }
+
+  async getInvitation(id: number): Promise<Invitation | null> {
+    const [i] = await this.db.query<Invitation>(`select ${INV_COLS} from invitations where id = $1`, [id]);
+    return i ?? null;
+  }
+
+  /** A document's invitations with their people, active ones first. */
+  async invitationsOfDocument(documentId: number): Promise<InvitationWithPerson[]> {
+    const rows = await this.db.query<Record<string, unknown>>(
+      `select ${prefixed(INV_COLS, "i")}, ${aliased(PERSON_COLS, "p", "p_")} from invitations i join people p on p.id = i.person_id
+       where i.document_id = $1 order by i.revoked_at nulls first, lower(p.name), i.id`,
+      [documentId],
+    );
+    return rows.map((r) => ({ ...inv(r), person: split<Person>(r, "p_") }));
+  }
+
+  /** A person's invitations with their documents. */
+  async invitationsOfPerson(personId: number, opts: { activeOnly?: boolean } = {}): Promise<InvitationWithDocument[]> {
+    const rows = await this.db.query<Record<string, unknown>>(
+      `select ${prefixed(INV_COLS, "i")}, ${aliased(DOC_COLS, "d", "d_")} from invitations i join documents d on d.id = i.document_id
+       where i.person_id = $1 ${opts.activeOnly ? "and i.revoked_at is null" : ""}
+       order by d.archived_at nulls first, lower(d.title), d.id`,
+      [personId],
+    );
+    return rows.map((r) => ({ ...inv(r), document: split<Document>(r, "d_") }));
+  }
+
+  /** Every invitation with its person (the owner's people list). */
+  async allInvitations(): Promise<InvitationWithDocument[]> {
+    const rows = await this.db.query<Record<string, unknown>>(
+      `select ${prefixed(INV_COLS, "i")}, ${aliased(DOC_COLS, "d", "d_")} from invitations i join documents d on d.id = i.document_id
+       order by d.archived_at nulls first, lower(d.title), i.id`,
+    );
+    return rows.map((r) => ({ ...inv(r), document: split<Document>(r, "d_") }));
+  }
+
+  /** The person's active invitation to a document, if any. */
+  async activeInvitation(personId: number, documentId: number): Promise<Invitation | null> {
+    const [i] = await this.db.query<Invitation>(
+      `select ${INV_COLS} from invitations where person_id = $1 and document_id = $2 and revoked_at is null`,
+      [personId, documentId],
+    );
+    return i ?? null;
+  }
+
+  async setInvitationRole(id: number, role: string): Promise<Invitation | null> {
+    const [i] = await this.db.query<Invitation>(`update invitations set role = $2 where id = $1 returning ${INV_COLS}`, [id, role]);
+    return i ?? null;
+  }
+
+  /**
+   * New secret for the link; the old link and every session opened with it stop
+   * working (a leaked link is the reason to rotate). A revoked invitation is
+   * reactivated.
+   */
+  async rotateInvitation(id: number): Promise<{ invitation: Invitation; secret: string } | null> {
     const secret = newSecret(32);
     return this.db.tx(async (q) => {
-      const [d] = await q.query<Director>(
-        `update directors set token_hash = $2, rotated_at = now(), revoked_at = null
-         where id = $1 returning ${DIRECTOR_COLS}`,
+      const [i] = await q.query<Invitation>(
+        `update invitations set token_hash = $2, rotated_at = now(), revoked_at = null where id = $1 returning ${INV_COLS}`,
         [id, sha256Hex(secret)],
       );
-      if (!d) return null;
-      await q.query("delete from sessions where director_id = $1", [id]);
-      return { director: d, secret };
+      if (!i) return null;
+      await q.query("delete from sessions where id_hash in (select session_id_hash from session_invitations where invitation_id = $1)", [id]);
+      return { invitation: i, secret };
     });
   }
 
-  async revokeDirector(id: number): Promise<Director | null> {
+  /**
+   * Revokes the access to the document at once. Sessions opened only with
+   * revoked links end; one also opened with another link of the same person
+   * keeps that person's other documents.
+   */
+  async revokeInvitation(id: number): Promise<Invitation | null> {
     return this.db.tx(async (q) => {
-      const [d] = await q.query<Director>(
-        `update directors set revoked_at = coalesce(revoked_at, now()) where id = $1 returning ${DIRECTOR_COLS}`,
+      const [i] = await q.query<Invitation>(
+        `update invitations set revoked_at = coalesce(revoked_at, now()) where id = $1 returning ${INV_COLS}`,
         [id],
       );
-      await q.query("delete from sessions where director_id = $1", [id]);
-      return d ?? null;
+      if (!i) return null;
+      await q.query(
+        `delete from sessions s where s.id_hash in (select session_id_hash from session_invitations where invitation_id = $1)
+         and not exists (select 1 from session_invitations si join invitations o on o.id = si.invitation_id
+                         where si.session_id_hash = s.id_hash and o.revoked_at is null)`,
+        [id],
+      );
+      return i;
     });
   }
 
   /** Looks a link secret up by its hash (an indexed lookup; the hash is not secret-dependent timing). */
-  async directorByLink(secret: string): Promise<Director | null> {
-    if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) return null;
-    const [d] = await this.db.query<Director>(
-      `select ${DIRECTOR_COLS} from directors where token_hash = $1 and revoked_at is null`,
+  async invitationByLink(secret: string): Promise<{ invitation: Invitation; person: Person; document: Document } | null> {
+    if (!SECRET_RE.test(secret)) return null;
+    const [r] = await this.db.query<Record<string, unknown>>(
+      `select ${prefixed(INV_COLS, "i")}, ${aliased(PERSON_COLS, "p", "p_")}, ${aliased(DOC_COLS, "d", "d_")}
+       from invitations i join people p on p.id = i.person_id join documents d on d.id = i.document_id
+       where i.token_hash = $1 and i.revoked_at is null`,
       [sha256Hex(secret)],
     );
-    return d ?? null;
+    return r ? { invitation: inv(r), person: split<Person>(r, "p_"), document: split<Document>(r, "d_") } : null;
   }
 
   // --- sessions ---
 
-  async createSession(kind: AuthorKind, directorId: number | null, ttlMs: number): Promise<{ id: string; csrf: string }> {
+  async createSession(kind: AuthorKind, personId: number | null, ttlMs: number, invitationId?: number): Promise<{ id: string; csrf: string; idHash: string }> {
     const id = newSecret(32);
     const csrf = newSecret(32);
-    await this.db.query(
-      `insert into sessions (id_hash, kind, director_id, csrf_token, expires_at, owner_fp)
-       values ($1, $2, $3, $4, $5, $6)`,
-      [sha256Hex(id), kind, directorId, csrf, new Date(Date.now() + ttlMs), kind === "owner" ? this.ownerFp : null],
-    );
-    if (directorId !== null) {
-      await this.db.query("update directors set last_seen_at = now() where id = $1", [directorId]);
-    }
-    return { id, csrf };
+    const idHash = sha256Hex(id);
+    await this.db.tx(async (q) => {
+      await q.query(
+        `insert into sessions (id_hash, kind, person_id, csrf_token, expires_at, owner_fp) values ($1, $2, $3, $4, $5, $6)`,
+        [idHash, kind, personId, csrf, new Date(Date.now() + ttlMs), kind === "owner" ? this.ownerFp : null],
+      );
+      if (invitationId !== undefined) await grant(q, idHash, invitationId);
+    });
+    return { id, csrf, idHash };
+  }
+
+  /** Another link of the same person, opened in a browser that has their session. */
+  async addSessionInvitation(idHash: string, invitationId: number): Promise<void> {
+    await this.db.tx((q) => grant(q, idHash, invitationId));
   }
 
   async getSession(id: string, slideFor: (kind: AuthorKind) => number): Promise<Session | null> {
-    if (!/^[A-Za-z0-9_-]{43}$/.test(id)) return null;
+    if (!SECRET_RE.test(id)) return null;
     const idHash = sha256Hex(id);
     const [s] = await this.db.query<{
       kind: AuthorKind;
-      director_id: number | null;
+      person_id: number | null;
       csrf_token: string;
       expires_at: Date;
       last_seen_at: Date;
       owner_fp: string | null;
-    }>("select kind, director_id, csrf_token, expires_at, last_seen_at, owner_fp from sessions where id_hash = $1", [idHash]);
+    }>("select kind, person_id, csrf_token, expires_at, last_seen_at, owner_fp from sessions where id_hash = $1", [idHash]);
     if (!s || new Date(s.expires_at).getTime() <= Date.now()) return null;
     if (s.kind === "owner" && (!this.ownerFp || s.owner_fp !== this.ownerFp)) {
       // Opened with an owner token that is no longer the current one.
       await this.deleteSession(idHash);
       return null;
     }
-    let director: Director | null = null;
-    if (s.kind === "director") {
-      director = s.director_id === null ? null : await this.getDirector(s.director_id);
-      if (!director || director.revoked_at) return null;
+    let person: Person | null = null;
+    if (s.kind === "reviewer") {
+      person = s.person_id === null ? null : await this.getPerson(s.person_id);
+      if (!person) return null;
+      // At least one of the links it was opened with must still be active.
+      const ok = await this.db.query(
+        `select 1 from session_invitations si join invitations i on i.id = si.invitation_id
+         where si.session_id_hash = $1 and i.revoked_at is null limit 1`,
+        [idHash],
+      );
+      if (ok.length === 0) return null;
     }
     // Sliding expiry, written at most once an hour.
     let refreshed = false;
@@ -235,9 +472,9 @@ export class Repo {
         idHash,
         new Date(Date.now() + slideFor(s.kind)),
       ]);
-      if (director) await this.db.query("update directors set last_seen_at = now() where id = $1", [director.id]);
+      if (person) await this.db.query("update people set last_seen_at = now() where id = $1", [person.id]);
     }
-    return { kind: s.kind, director, csrf: s.csrf_token, idHash, refreshed };
+    return { kind: s.kind, person, csrf: s.csrf_token, idHash, refreshed };
   }
 
   async deleteSession(idHash: string): Promise<void> {
@@ -257,54 +494,44 @@ export class Repo {
     return rows.length;
   }
 
-  /** "Cerrar todas las sesiones": every owner web session and, optionally, every director session. */
-  async closeAllSessions(directorsToo: boolean): Promise<{ owner: number; directors: number }> {
+  /** "Close all sessions": every owner web session and, optionally, every reviewer session. */
+  async closeAllSessions(reviewersToo: boolean): Promise<{ owner: number; reviewers: number }> {
     const owner = await this.db.query("delete from sessions where kind = 'owner' returning id_hash");
-    const directors = directorsToo ? await this.db.query("delete from sessions where kind = 'director' returning id_hash") : [];
-    return { owner: owner.length, directors: directors.length };
-  }
-
-  // --- settings ---
-
-  async getSetting<T>(key: string, fallback: T): Promise<T> {
-    const [r] = await this.db.query<{ value: T }>("select value from settings where key = $1", [key]);
-    return r ? r.value : fallback;
-  }
-
-  async setSetting(key: string, value: unknown): Promise<void> {
-    await this.db.query(
-      `insert into settings (key, value) values ($1, $2::jsonb)
-       on conflict (key) do update set value = excluded.value`,
-      [key, JSON.stringify(value)],
-    );
-  }
-
-  visibility(): Promise<Visibility> {
-    return this.getSetting<Visibility>("comments_visibility", "all");
+    const reviewers = reviewersToo ? await this.db.query("delete from sessions where kind = 'reviewer' returning id_hash") : [];
+    return { owner: owner.length, reviewers: reviewers.length };
   }
 
   // --- versions ---
 
-  async createVersion(input: {
-    title: string;
-    note: string;
-    pdfKey: (n: number) => string;
-    pdfSha256: string;
-    pdfSize: number;
-    pages: string[];
-    progress: Progress | null;
-    sectionPages: SectionPages[];
-  }): Promise<Version> {
+  async createVersion(
+    doc: Document,
+    input: {
+      title: string;
+      note: string;
+      pdfKey: string;
+      pdfSha256: string;
+      pdfSize: number;
+      pages: string[];
+      progress: Progress | null;
+      sectionPages: SectionPages[];
+    },
+  ): Promise<Version> {
     return this.db.tx(async (q) => {
-      const [{ n } = { n: 1 }] = await q.query<{ n: number }>("select coalesce(max(number), 0) + 1 as n from versions");
+      // One publication at a time per document: the number is max + 1.
+      await q.query("select id from documents where id = $1 for update", [doc.id]);
+      const [{ n } = { n: 1 }] = await q.query<{ n: number }>(
+        "select coalesce(max(number), 0) + 1 as n from versions where document_id = $1",
+        [doc.id],
+      );
       const [v] = await q.query<Version>(
-        `insert into versions (number, title, note, pdf_key, pdf_sha256, pdf_size, page_count, progress, section_pages)
-         values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb) returning *`,
+        `insert into versions (document_id, number, title, note, pdf_key, pdf_sha256, pdf_size, page_count, progress, section_pages)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb) returning *`,
         [
+          doc.id,
           n,
           input.title,
           input.note,
-          input.pdfKey(n),
+          input.pdfKey,
           input.pdfSha256,
           input.pdfSize,
           input.pages.length,
@@ -315,27 +542,32 @@ export class Repo {
       for (let i = 0; i < input.pages.length; i += 100) {
         const chunk = input.pages.slice(i, i + 100);
         const values = chunk.map((_, j) => `($1, $${2 * j + 2}, $${2 * j + 3})`).join(", ");
-        await q.query(
-          `insert into version_pages (version_id, page, text) values ${values}`,
-          [v!.id, ...chunk.flatMap((t, j) => [i + j + 1, t])],
-        );
+        await q.query(`insert into version_pages (version_id, page, text) values ${values}`, [v!.id, ...chunk.flatMap((t, j) => [i + j + 1, t])]);
       }
       return v!;
     });
   }
 
-  listVersions(): Promise<Version[]> {
-    return this.db.query<Version>("select * from versions order by number desc");
+  listVersions(documentId: number): Promise<Version[]> {
+    return this.db.query<Version>("select * from versions where document_id = $1 order by number desc", [documentId]);
   }
 
-  async getVersion(number: number): Promise<Version | null> {
-    const [v] = await this.db.query<Version>("select * from versions where number = $1", [number]);
+  async getVersion(documentId: number, number: number): Promise<Version | null> {
+    const [v] = await this.db.query<Version>("select * from versions where document_id = $1 and number = $2", [documentId, number]);
     return v ?? null;
   }
 
-  async latestVersion(): Promise<Version | null> {
-    const [v] = await this.db.query<Version>("select * from versions order by number desc limit 1");
+  async latestVersion(documentId: number): Promise<Version | null> {
+    const [v] = await this.db.query<Version>("select * from versions where document_id = $1 order by number desc limit 1", [documentId]);
     return v ?? null;
+  }
+
+  async previousVersion(v: Version): Promise<Version | null> {
+    const [p] = await this.db.query<Version>(
+      "select * from versions where document_id = $1 and number < $2 order by number desc limit 1",
+      [v.document_id, v.number],
+    );
+    return p ?? null;
   }
 
   /** The stored diff of a version: undefined if not computed yet (null = first version). */
@@ -352,10 +584,7 @@ export class Repo {
   }
 
   async pages(versionId: number): Promise<string[]> {
-    const rows = await this.db.query<{ text: string }>(
-      "select text from version_pages where version_id = $1 order by page",
-      [versionId],
-    );
+    const rows = await this.db.query<{ text: string }>("select text from version_pages where version_id = $1 order by page", [versionId]);
     return rows.map((r) => r.text);
   }
 
@@ -368,14 +597,14 @@ export class Repo {
   ): Promise<number> {
     return this.db.tx(async (q) => {
       const [t] = await q.query<{ id: number }>(
-        `insert into threads (version_id, page, anchor, quote, rects, author_kind, director_id)
-         values ($1, $2, $3, $4, $5::jsonb, $6, $7) returning id`,
-        [version.id, input.page, input.anchor, input.quote, JSON.stringify(input.rects), viewer.kind, viewer.directorId],
+        `insert into threads (document_id, version_id, page, anchor, quote, rects, author_kind, person_id)
+         values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8) returning id`,
+        [version.document_id, version.id, input.page, input.anchor, input.quote, JSON.stringify(input.rects), viewer.kind, viewer.personId],
       );
-      await q.query("insert into comments (thread_id, author_kind, director_id, body) values ($1, $2, $3, $4)", [
+      await q.query("insert into comments (thread_id, author_kind, person_id, body) values ($1, $2, $3, $4)", [
         t!.id,
         viewer.kind,
-        viewer.directorId,
+        viewer.personId,
         input.body,
       ]);
       return t!.id;
@@ -385,37 +614,37 @@ export class Repo {
   async addReply(threadId: number, body: string, viewer: Viewer): Promise<number> {
     return this.db.tx(async (q) => {
       const [c] = await q.query<{ id: number }>(
-        "insert into comments (thread_id, author_kind, director_id, body) values ($1, $2, $3, $4) returning id",
-        [threadId, viewer.kind, viewer.directorId, body],
+        "insert into comments (thread_id, author_kind, person_id, body) values ($1, $2, $3, $4) returning id",
+        [threadId, viewer.kind, viewer.personId, body],
       );
       await q.query("update threads set updated_at = now() where id = $1", [threadId]);
       return c!.id;
     });
   }
 
-  /** Comments (thread openings included) a director wrote since `since`. */
-  async countDirectorComments(directorId: number, since: Date): Promise<number> {
+  /** Comments (thread openings included) a person wrote since `since`, in any document. */
+  async countPersonComments(personId: number, since: Date): Promise<number> {
     const [r] = await this.db.query<{ n: number }>(
-      "select count(*)::int as n from comments where director_id = $1 and created_at >= $2",
-      [directorId, since],
+      "select count(*)::int as n from comments where person_id = $1 and created_at >= $2",
+      [personId, since],
     );
     return r?.n ?? 0;
   }
 
-  async getComment(id: number): Promise<{
-    id: number;
-    thread_id: number;
-    author_kind: AuthorKind;
-    director_id: number | null;
-    deleted_at: Date | null;
-  } | null> {
-    const [c] = await this.db.query<{
-      id: number;
-      thread_id: number;
-      author_kind: AuthorKind;
-      director_id: number | null;
-      deleted_at: Date | null;
-    }>("select id, thread_id, author_kind, director_id, deleted_at from comments where id = $1", [id]);
+  /** The document a thread belongs to. */
+  async threadDocument(threadId: number): Promise<Document | null> {
+    const [d] = await this.db.query<Document>(
+      `select ${prefixed(DOC_COLS, "d")} from threads t join documents d on d.id = t.document_id where t.id = $1`,
+      [threadId],
+    );
+    return d ?? null;
+  }
+
+  async getComment(id: number): Promise<{ id: number; thread_id: number; author_kind: AuthorKind; person_id: number | null; deleted_at: Date | null } | null> {
+    const [c] = await this.db.query<{ id: number; thread_id: number; author_kind: AuthorKind; person_id: number | null; deleted_at: Date | null }>(
+      "select id, thread_id, author_kind, person_id, deleted_at from comments where id = $1",
+      [id],
+    );
     return c ?? null;
   }
 
@@ -446,33 +675,34 @@ export class Repo {
     await this.db.query("update comments set deleted_at = coalesce(deleted_at, now()) where id = $1", [id]);
   }
 
-  async setStatus(threadId: number, status: "open" | "resolved", by: Viewer & { name: string }): Promise<void> {
+  async setStatus(threadId: number, status: "open" | "resolved", by: Viewer): Promise<void> {
     const resolved = status === "resolved";
     await this.db.query(
       `update threads set status = $2, resolved_at = ${resolved ? "now()" : "null"},
-       resolved_by = $3, resolved_by_kind = $4, resolved_by_director_id = $5, updated_at = now() where id = $1`,
-      resolved ? [threadId, status, by.name, by.kind, by.directorId] : [threadId, status, null, null, null],
+       resolved_by_kind = $3, resolved_by_person_id = $4, updated_at = now() where id = $1`,
+      resolved ? [threadId, status, by.kind, by.personId] : [threadId, status, null, null],
     );
   }
 
-  /** Threads visible to `viewer`, with their comments. */
+  /** Threads of a document visible to `viewer`, with their comments. */
   async listThreads(
+    doc: Document,
     viewer: Viewer,
     filter: { versionNumber?: number; status?: "open" | "resolved"; threadId?: number; since?: Date } = {},
   ): Promise<ThreadOut[]> {
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const params: unknown[] = [doc.id];
     const p = (v: unknown) => {
       params.push(v);
       return `$${params.length}`;
     };
+    const where = ["t.document_id = $1"];
     if (filter.versionNumber !== undefined) where.push(`v.number = ${p(filter.versionNumber)}`);
     if (filter.status) where.push(`t.status = ${p(filter.status)}`);
     if (filter.threadId !== undefined) where.push(`t.id = ${p(filter.threadId)}`);
-    // "own": a director sees the threads opened by the owner or by them, and in
+    // "own": a reviewer sees the threads opened by the owner or by them, and in
     // them only the owner's comments and their own.
-    const own = viewer.kind === "director" && (await this.visibility()) === "own";
-    if (own) where.push(`(t.author_kind = 'owner' or t.director_id = ${p(viewer.directorId)})`);
+    const own = viewer.kind === "reviewer" && doc.visibility === "own";
+    if (own) where.push(`(t.author_kind = 'owner' or t.person_id = ${p(viewer.personId)})`);
     const threads = await this.db.query<{
       id: number;
       number: number;
@@ -482,18 +712,16 @@ export class Repo {
       rects: Rect[];
       status: "open" | "resolved";
       resolved_at: Date | null;
-      resolved_by: string | null;
       resolved_by_kind: AuthorKind | null;
-      resolved_by_director_id: number | null;
+      resolved_by_person_id: number | null;
       author_kind: AuthorKind;
-      director_id: number | null;
+      person_id: number | null;
       created_at: Date;
       updated_at: Date;
       section_pages: SectionPages[];
     }>(
       `select t.*, v.number, v.section_pages from threads t join versions v on v.id = t.version_id
-       ${where.length ? "where " + where.join(" and ") : ""}
-       order by v.number desc, t.page, t.id`,
+       where ${where.join(" and ")} order by v.number desc, t.page, t.id`,
       params,
     );
     if (threads.length === 0) return [];
@@ -501,50 +729,64 @@ export class Repo {
       id: number;
       thread_id: number;
       author_kind: AuthorKind;
-      director_id: number | null;
+      person_id: number | null;
       body: string;
       created_at: Date;
       edited_at: Date | null;
       deleted_at: Date | null;
     }>(
       `select * from comments where thread_id = any($1::int[])
-       ${own ? "and (author_kind = 'owner' or director_id = $2)" : ""} order by created_at, id`,
-      own ? [threads.map((t) => t.id), viewer.directorId] : [threads.map((t) => t.id)],
+       ${own ? "and (author_kind = 'owner' or person_id = $2)" : ""} order by created_at, id`,
+      own ? [threads.map((t) => t.id), viewer.personId] : [threads.map((t) => t.id)],
     );
-    const names = new Map((await this.listDirectors()).map((d) => [d.id, d.name]));
-    const author = (kind: AuthorKind, id: number | null) => ({
-      kind,
-      director_id: id,
-      name: kind === "owner" ? this.ownerName : (names.get(id ?? -1) ?? "Director(a)"),
-    });
+    const ids = new Set<number>();
+    for (const t of threads) {
+      if (t.person_id !== null) ids.add(t.person_id);
+      if (t.resolved_by_person_id !== null) ids.add(t.resolved_by_person_id);
+    }
+    for (const c of comments) if (c.person_id !== null) ids.add(c.person_id);
+    const people = ids.size
+      ? await this.db.query<{ id: number; name: string; role: string | null }>(
+          `select p.id, p.name, i.role from people p left join invitations i on i.person_id = p.id and i.document_id = $2
+           where p.id = any($1::int[])`,
+          [[...ids], doc.id],
+        )
+      : [];
+    const byId = new Map(people.map((x) => [x.id, x]));
+    const author = (kind: AuthorKind, id: number | null): Author =>
+      kind === "owner"
+        ? { kind, person_id: null, name: this.ownerName, role: "" }
+        : { kind, person_id: id, name: byId.get(id ?? -1)?.name ?? "?", role: byId.get(id ?? -1)?.role ?? "" };
     const byThread = new Map<number, CommentOut[]>();
     for (const c of comments) {
       const list = byThread.get(c.thread_id) ?? [];
       const deleted = c.deleted_at !== null;
       list.push({
         id: c.id,
-        author: author(c.author_kind, c.director_id),
+        author: author(c.author_kind, c.person_id),
         body: deleted ? null : c.body,
-        body_html: deleted ? "<p><em>Comentario eliminado.</em></p>" : renderComment(c.body),
+        body_html: deleted ? "" : renderComment(c.body),
         created_at: iso(c.created_at)!,
         edited_at: iso(c.edited_at),
         deleted,
-        mine: c.author_kind === viewer.kind && (viewer.kind === "owner" || c.director_id === viewer.directorId),
+        mine: c.author_kind === viewer.kind && (viewer.kind === "owner" || c.person_id === viewer.personId),
       });
       byThread.set(c.thread_id, list);
     }
     const since = filter.since?.getTime();
     const resolvedBy = (t: (typeof threads)[number]): string | null => {
-      if (!t.resolved_by || !own) return t.resolved_by;
-      if (t.resolved_by_kind === "owner") return t.resolved_by;
-      if (t.resolved_by_kind === "director") return t.resolved_by_director_id === viewer.directorId ? t.resolved_by : null;
-      return t.resolved_by === this.ownerName ? t.resolved_by : null; // before 002_resolved_by
+      if (t.resolved_by_kind === null) return null;
+      if (t.resolved_by_kind === "owner") return this.ownerName;
+      // With "own", another reviewer's name stays hidden.
+      if (own && t.resolved_by_person_id !== viewer.personId) return null;
+      return byId.get(t.resolved_by_person_id ?? -1)?.name ?? null;
     };
     return threads
       .map((t): ThreadOut => {
         const ch = sectionOfPage(t.section_pages ?? [], t.page);
         return {
           id: t.id,
+          document: doc.slug,
           version: t.number,
           page: t.page,
           anchor: t.anchor,
@@ -552,38 +794,29 @@ export class Repo {
           rects: t.rects,
           status: t.status,
           resolved_at: iso(t.resolved_at),
-          resolved_by: resolvedBy(t),
+          resolved_by: t.status === "resolved" ? resolvedBy(t) : null,
           section: ch ? { id: ch.id, title: ch.title } : null,
-          author: author(t.author_kind, t.director_id),
+          author: author(t.author_kind, t.person_id),
           created_at: iso(t.created_at)!,
           updated_at: iso(t.updated_at)!,
-          can_resolve:
-            viewer.kind === "owner" || (t.author_kind === "director" && t.director_id === viewer.directorId),
+          can_resolve: viewer.kind === "owner" || (t.author_kind === "reviewer" && t.person_id === viewer.personId),
           comments: byThread.get(t.id) ?? [],
         };
       })
       .filter((t) => since === undefined || t.comments.some((c) => Date.parse(c.created_at) >= since));
   }
 
-  async threadVersion(threadId: number): Promise<number | null> {
-    const [r] = await this.db.query<{ number: number }>(
-      "select v.number from threads t join versions v on v.id = t.version_id where t.id = $1",
-      [threadId],
-    );
-    return r?.number ?? null;
-  }
-
   /**
-   * What a director hasn't heard about: comments by others since `since`, in the
-   * threads they opened or replied to, as that director sees them (visibility
-   * setting included).
+   * What a reviewer hasn't heard about in a document: comments by others since
+   * `since`, in the threads they opened or replied to, as that reviewer sees
+   * them (the document's visibility included).
    */
-  async directorUpdates(directorId: number, since: Date): Promise<{ thread: ThreadOut; comment: CommentOut }[]> {
-    const threads = await this.listThreads({ kind: "director", directorId }, { since });
+  async reviewerUpdates(doc: Document, personId: number, since: Date): Promise<{ thread: ThreadOut; comment: CommentOut }[]> {
+    const threads = await this.listThreads(doc, { kind: "reviewer", personId }, { since });
     return threads.flatMap((t) =>
-      participates(t, directorId)
+      participates(t, personId)
         ? t.comments
-            .filter((c) => !c.deleted && !isBy(c, directorId) && Date.parse(c.created_at) >= since.getTime())
+            .filter((c) => !c.deleted && !isBy(c, personId) && Date.parse(c.created_at) >= since.getTime())
             .map((comment) => ({ thread: t, comment }))
         : [],
     );
@@ -591,35 +824,41 @@ export class Repo {
 
   // --- digest bookkeeping (a day is marked only after its digest went out) ---
 
-  async digestDone(day: string): Promise<boolean> {
-    return (await this.db.query("select 1 from digest_runs where day = $1", [day])).length > 0;
+  async digestDone(documentId: number, day: string): Promise<boolean> {
+    return (await this.db.query("select 1 from digest_runs where document_id = $1 and day = $2", [documentId, day])).length > 0;
   }
 
-  async markDigest(day: string): Promise<void> {
-    await this.db.query("insert into digest_runs (day) values ($1) on conflict do nothing", [day]);
+  async markDigest(documentId: number, day: string): Promise<void> {
+    await this.db.query("insert into digest_runs (document_id, day) values ($1, $2) on conflict do nothing", [documentId, day]);
   }
 
-  async directorDigestDone(directorId: number, day: string): Promise<boolean> {
-    return (await this.db.query("select 1 from director_digest_runs where director_id = $1 and day = $2", [directorId, day])).length > 0;
+  async reviewerDigestDone(invitationId: number, day: string): Promise<boolean> {
+    return (await this.db.query("select 1 from reviewer_digest_runs where invitation_id = $1 and day = $2", [invitationId, day])).length > 0;
   }
 
-  async markDirectorDigest(directorId: number, day: string): Promise<void> {
-    await this.db.query("insert into director_digest_runs (director_id, day) values ($1, $2) on conflict do nothing", [directorId, day]);
+  async markReviewerDigest(invitationId: number, day: string): Promise<void> {
+    await this.db.query("insert into reviewer_digest_runs (invitation_id, day) values ($1, $2) on conflict do nothing", [invitationId, day]);
   }
 
-  /** When the director's last digest went out. */
-  async lastDirectorDigest(directorId: number): Promise<Date | null> {
-    const [r] = await this.db.query<{ at: Date | null }>("select max(sent_at) as at from director_digest_runs where director_id = $1", [directorId]);
+  /** When the invitation's last digest went out. */
+  async lastReviewerDigest(invitationId: number): Promise<Date | null> {
+    const [r] = await this.db.query<{ at: Date | null }>("select max(sent_at) as at from reviewer_digest_runs where invitation_id = $1", [invitationId]);
     return r?.at ? new Date(r.at) : null;
   }
 }
 
-const isBy = (c: { author: { kind: AuthorKind; director_id: number | null } }, directorId: number) =>
-  c.author.kind === "director" && c.author.director_id === directorId;
+async function grant(q: Queryable, idHash: string, invitationId: number): Promise<void> {
+  await q.query("insert into session_invitations (session_id_hash, invitation_id) values ($1, $2) on conflict do nothing", [idHash, invitationId]);
+  await q.query("update invitations set last_seen_at = now() where id = $1", [invitationId]);
+  await q.query("update people set last_seen_at = now() where id = (select person_id from invitations where id = $1)", [invitationId]);
+}
 
-/** A director takes part in a thread they opened or replied to. */
-export function participates(t: ThreadOut, directorId: number): boolean {
-  return isBy(t, directorId) || t.comments.some((c) => isBy(c, directorId));
+const isBy = (c: { author: { kind: AuthorKind; person_id: number | null } }, personId: number) =>
+  c.author.kind === "reviewer" && c.author.person_id === personId;
+
+/** A reviewer takes part in a thread they opened or replied to. */
+export function participates(t: ThreadOut, personId: number): boolean {
+  return isBy(t, personId) || t.comments.some((c) => isBy(c, personId));
 }
 
 export type { Queryable };

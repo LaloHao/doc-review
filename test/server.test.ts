@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sampleProgress, sampleThesis } from "./fixtures/make-pdf.mjs";
-import { OWNER_TOKEN, settle, startTestServer, type TestServer } from "./helpers.js";
+import { sampleAvance, sampleProgress, sampleThesis } from "./fixtures/make-pdf.mjs";
+import { Browser, ORIGIN, OWNER_TOKEN, publishForm, settle, startTestServer, type TestServer } from "./helpers.js";
 
-const ORIGIN = "https://revision.example.test";
 let s: TestServer;
 
 beforeAll(async () => {
@@ -12,58 +11,18 @@ afterAll(async () => {
   await s.stop();
 });
 
-const owner = (path: string, init: RequestInit = {}) =>
-  fetch(s.url + path, { ...init, headers: { authorization: `Bearer ${OWNER_TOKEN}`, ...(init.headers ?? {}) } });
+const ANA = "Dra. Ana Torres Ruiz";
+const LUIS = "Dr. Luis Méndez Ortega";
 
-const ownerJson = (method: string, path: string, body: unknown) =>
-  owner(path, { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } });
-
-function publishForm(pdf: Uint8Array, avance: unknown, note = "") {
-  const f = new FormData();
-  f.set("pdf", new Blob([pdf as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "tesis.pdf");
-  f.set("progress", new Blob([JSON.stringify(avance)], { type: "application/json" }), "avance.json");
-  f.set("note", note);
-  return f;
-}
-
-/** A browser: keeps the session cookie, sends Origin and the CSRF token like viewer.js. */
-class Browser {
-  cookie = "";
-  csrf = "";
-  async get(path: string) {
-    const res = await fetch(s.url + path, { redirect: "manual", headers: this.cookie ? { cookie: this.cookie } : {} });
-    const set = res.headers.getSetCookie();
-    for (const c of set) {
-      const [pair] = c.split(";");
-      if (pair!.startsWith("__Host-dr_session=")) this.cookie = pair!.endsWith("=") ? "" : pair!;
-    }
-    return res;
-  }
-  async login() {
-    const me = await this.get("/api/me");
-    this.csrf = ((await me.json()) as { csrf: string }).csrf;
-  }
-  send(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
-    return fetch(s.url + path, {
-      method,
-      redirect: "manual",
-      headers: {
-        cookie: this.cookie,
-        origin: ORIGIN,
-        "x-csrf-token": this.csrf,
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...headers,
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  }
-}
-
-let directorLink = "";
-let directorId = 0;
-let codirectorLink = "";
-const director = new Browser();
-const codirector = new Browser();
+let anaThesisLink = "";
+let anaReportLink = "";
+let anaThesisInv = 0;
+let anaReportInv = 0;
+let anaPerson = 0;
+let luisLink = "";
+let luisInv = 0;
+let ana: Browser; // opened the thesis link only
+let luis: Browser;
 let threadId = 0;
 
 describe("security basics", () => {
@@ -83,136 +42,242 @@ describe("security basics", () => {
 
   it("requires auth on every API route", async () => {
     for (const [method, path] of [
-      ["GET", "/api/versions"],
-      ["GET", "/api/threads"],
-      ["GET", "/api/versions/1/pdf"],
-      ["POST", "/api/threads"],
-      ["GET", "/api/directors"],
-      ["PUT", "/api/settings"],
+      ["GET", "/api/documents"],
+      ["POST", "/api/documents"],
+      ["GET", "/api/documents/x/versions"],
+      ["GET", "/api/documents/x/threads"],
+      ["GET", "/api/documents/x/versions/1/pdf"],
+      ["POST", "/api/documents/x/threads"],
+      ["GET", "/api/people"],
+      ["GET", "/api/threads/1"],
+      ["POST", "/api/invitations/1/rotate"],
+      ["GET", "/api/settings"],
     ] as const) {
       const res = await fetch(s.url + path, { method });
       expect(res.status, `${method} ${path}`).toBe(401);
     }
-    expect((await fetch(s.url + "/v/1", { redirect: "manual" })).status).toBe(303);
+    expect((await fetch(s.url + "/d/x/v/1", { redirect: "manual" })).status).toBe(303);
   });
 
   it("rejects a wrong bearer token", async () => {
-    const res = await fetch(s.url + "/api/versions", { headers: { authorization: "Bearer nope" } });
+    const res = await fetch(s.url + "/api/documents", { headers: { authorization: "Bearer nope" } });
     expect(res.status).toBe(401);
   });
 
-  it("serves pdf.js and static files", async () => {
+  it("serves pdf.js and static files, nothing else", async () => {
     const res = await fetch(s.url + "/vendor/pdfjs/pdf.mjs");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect((await fetch(s.url + "/vendor/pdfjs/pdf.worker.mjs")).status).toBe(200);
     expect((await fetch(s.url + "/static/viewer.js")).status).toBe(200);
+    expect((await fetch(s.url + "/static/i18n-format.js")).status).toBe(200);
     expect((await fetch(s.url + "/static/../package.json")).status).toBe(404);
     expect((await fetch(s.url + "/vendor/pdfjs/package.json")).status).toBe(404);
+  });
+
+  it("pages outside a document follow Accept-Language", async () => {
+    const en = await (await fetch(s.url + "/", { headers: { "accept-language": "en-US,en;q=0.9" } })).text();
+    expect(en).toContain('<html lang="en">');
+    expect(en).toContain("Owner sign-in");
+    const es = await (await fetch(s.url + "/", { headers: { "accept-language": "es-MX,es;q=0.9,en;q=0.5" } })).text();
+    expect(es).toContain('<html lang="es">');
+    expect(es).toContain("Acceso del autor");
+    expect(await (await fetch(s.url + "/", { headers: { "accept-language": "fr" } })).text()).toContain('<html lang="en">');
+  });
+});
+
+describe("documents", () => {
+  it("are created by the owner with a valid, unique slug", async () => {
+    expect((await s.ownerJson("POST", "/api/documents", { slug: "thesis", title: "Método computacional", language: "es", default_role: "Director(a)" })).status).toBe(201);
+    expect((await s.ownerJson("POST", "/api/documents", { slug: "report", title: "Q3 report for ACME", language: "en" })).status).toBe(201);
+    for (const slug of ["Thesis", "-x", "x-", "a/b", "", "a".repeat(64), "ñ"]) {
+      expect((await s.ownerJson("POST", "/api/documents", { slug, title: "x" })).status, slug).toBe(400);
+    }
+    const dup = await s.ownerJson("POST", "/api/documents", { slug: "thesis", title: "again" });
+    expect(dup.status).toBe(409);
+    expect(((await dup.json()) as { error: string }).error).toMatch(/already has that short name/);
+    expect((await s.ownerJson("POST", "/api/documents", { slug: "x1", title: "x", language: "fr" })).status).toBe(400);
+    expect((await s.ownerJson("POST", "/api/documents", { slug: "x1", title: "x", visibility: "some" })).status).toBe(400);
+    const { documents } = (await (await s.owner("/api/documents")).json()) as { documents: { slug: string; language: string; default_role: string }[] };
+    expect(documents.map((d) => d.slug)).toEqual(["thesis", "report"]);
+    expect(documents[0]).toMatchObject({ language: "es", default_role: "Director(a)" });
+  });
+
+  it("can be renamed (title and slug); a taken slug is refused", async () => {
+    await s.createDoc("tmp-doc");
+    let res = await s.ownerJson("PATCH", "/api/documents/tmp-doc", { title: "Paper draft", slug: "paper" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { document: { slug: string; title: string } }).document).toMatchObject({ slug: "paper", title: "Paper draft" });
+    expect((await s.owner("/api/documents/tmp-doc")).status).toBe(404);
+    res = await s.ownerJson("PATCH", "/api/documents/paper", { slug: "thesis" });
+    expect(res.status).toBe(409);
   });
 });
 
 describe("publishing", () => {
-  it("rejects files that are not PDFs and invalid avance.json", async () => {
-    let res = await owner("/api/versions", { method: "POST", body: publishForm(new TextEncoder().encode("hola"), sampleProgress()) });
+  it("rejects files that are not PDFs and invalid progress.json", async () => {
+    let res = await s.owner("/api/documents/thesis/versions", { method: "POST", body: publishForm(new TextEncoder().encode("hola"), sampleProgress()) });
     expect(res.status).toBe(400);
+    // The thesis is in Spanish, but API messages follow Accept-Language.
+    expect(((await res.json()) as { error: string }).error).toMatch(/not a PDF/);
+    res = await s.owner("/api/documents/thesis/versions", { method: "POST", headers: { "accept-language": "es" }, body: publishForm(new TextEncoder().encode("hola"), sampleProgress()) });
     expect(((await res.json()) as { error: string }).error).toMatch(/no es un PDF/);
-    res = await owner("/api/versions", {
-      method: "POST",
-      body: publishForm(new TextEncoder().encode("%PDF-1.4\ngarbage"), sampleProgress()),
-    });
+    res = await s.owner("/api/documents/thesis/versions", { method: "POST", body: publishForm(new TextEncoder().encode("%PDF-1.4\ngarbage"), sampleProgress()) });
     expect(res.status).toBe(400);
-    res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(), { schema: 2 }) });
+    res = await s.owner("/api/documents/thesis/versions", { method: "POST", body: publishForm(sampleThesis(), { schema: 2 }) });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(/schema/);
+    expect((await s.publish("nope")).status).toBe(404);
   });
 
   it("rejects oversized uploads", async () => {
     const small = await startTestServer({ MAX_PDF_MB: "1" });
     try {
+      await small.createDoc("d");
       const big = new Uint8Array(3 * 1024 * 1024);
       big.set(new TextEncoder().encode("%PDF-1.4"));
-      const res = await fetch(small.url + "/api/versions", {
-        method: "POST",
-        headers: { authorization: `Bearer ${OWNER_TOKEN}` },
-        body: publishForm(big, sampleProgress()),
-      });
-      expect(res.status).toBe(413);
+      expect((await small.publish("d", big)).status).toBe(413);
     } finally {
       await small.stop();
     }
   });
 
-  it("publishes version 1 and finds the chapters in the PDF", async () => {
-    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(), sampleProgress(), "Primera versión") });
+  it("publishes version 1 and finds the sections in the PDF", async () => {
+    const res = await s.publish("thesis", sampleThesis(), sampleProgress(), "Primera versión");
     expect(res.status).toBe(201);
-    const { version } = (await res.json()) as { version: { number: number; page_count: number; sections: { id: string; start_page: number }[] } };
+    const { version, url } = (await res.json()) as { version: { number: number; page_count: number; sections: { id: string; start_page: number }[] }; url: string };
     expect(version.number).toBe(1);
     expect(version.page_count).toBe(5);
     expect(version.sections.map((c) => c.start_page)).toEqual([3, 4, 5]);
+    expect(url).toBe(`${ORIGIN}/d/thesis/v/1`);
+  });
+
+  it("numbers versions per document; progress.json is optional and avance.json is accepted", async () => {
+    let res = await s.owner("/api/documents/report/versions", { method: "POST", body: publishForm(sampleThesis(), null, "No progress") });
+    expect(res.status).toBe(201);
+    const v1 = ((await res.json()) as { version: { number: number; progress: unknown; sections: unknown[] } }).version;
+    expect(v1).toMatchObject({ number: 1, progress: null, sections: [] });
+    // The thesis template's file and field name.
+    res = await s.owner("/api/documents/report/versions", { method: "POST", body: publishForm(sampleThesis(true), sampleAvance(true), "", "avance") });
+    expect(res.status).toBe(201);
+    const v2 = ((await res.json()) as { version: { number: number; progress: { sections: { status: string }[] } } }).version;
+    expect(v2.number).toBe(2);
+    expect(v2.progress.sections[0]!.status).toBe("review");
+    // Without progress on one side, the diff covers the whole document.
+    await settle();
+    const diff = ((await (await s.owner("/api/documents/report/versions/2/diff")).json()) as { diff: { mode: string; sections: { id: string | null }[] } }).diff;
+    expect(diff.mode).toBe("document");
   });
 });
 
-describe("director links", () => {
-  it("creates links (shown once) and stores only hashes", async () => {
-    let res = await ownerJson("POST", "/api/directors", {
-      name: "Dra. Ana Torres Ruiz",
-      role: "Director",
-      email: "director@example.test",
-      notify_versions: true,
-    });
-    expect(res.status).toBe(201);
-    const a = (await res.json()) as { link: string; director: { id: number } };
-    directorLink = a.link;
-    directorId = a.director.id;
-    expect(directorLink).toMatch(/^https:\/\/revision\.example\.test\/acceso\/[A-Za-z0-9_-]{43}$/);
-    res = await ownerJson("POST", "/api/directors", { name: "Dr. Luis Méndez Ortega", role: "Codirector" });
-    codirectorLink = ((await res.json()) as { link: string }).link;
+describe("invitations and links", () => {
+  it("create links (shown once) and store only hashes; the role defaults to the document's", async () => {
+    let r = await s.invite("thesis", { name: ANA, email: "director@example.test" });
+    anaThesisLink = r.link;
+    anaThesisInv = r.invitationId;
+    anaPerson = r.personId;
+    expect(anaThesisLink).toMatch(/^https:\/\/review\.example\.test\/a\/[A-Za-z0-9_-]{43}$/);
+    await s.ownerJson("PATCH", `/api/people/${anaPerson}`, { notify_versions: true });
+    // The same person, invited to a second document with another role.
+    r = await s.invite("report", { person_id: anaPerson, role: "Reviewer" });
+    anaReportLink = r.link;
+    anaReportInv = r.invitationId;
+    expect(r.personId).toBe(anaPerson);
+    expect(anaReportLink).not.toBe(anaThesisLink);
+    r = await s.invite("thesis", { name: LUIS, role: "Codirector(a)" });
+    luisLink = r.link;
+    luisInv = r.invitationId;
+    expect((await s.ownerJson("POST", "/api/documents/thesis/invitations", { person_id: anaPerson })).status).toBe(409);
 
-    const rows = await s.repo.db.query<{ token_hash: string }>("select token_hash from directors");
-    const secret = directorLink.split("/").pop()!;
-    expect(rows.every((r) => /^[0-9a-f]{64}$/.test(r.token_hash) && r.token_hash !== secret)).toBe(true);
-    const list = await (await owner("/api/directors")).json();
-    expect(JSON.stringify(list)).not.toContain(secret);
-    expect(JSON.stringify(list)).not.toContain("token_hash");
+    const rows = await s.repo.db.query<{ token_hash: string }>("select token_hash from invitations");
+    const secret = anaThesisLink.split("/").pop()!;
+    expect(rows.every((x) => /^[0-9a-f]{64}$/.test(x.token_hash) && x.token_hash !== secret)).toBe(true);
+    for (const path of ["/api/people", "/api/documents/thesis/invitations"]) {
+      const text = await (await s.owner(path)).text();
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain("token_hash");
+    }
+    const list = (await (await s.owner("/api/documents/thesis/invitations")).json()) as { invitations: { role: string; person: { name: string } }[] };
+    expect(list.invitations.map((i) => [i.person.name, i.role])).toEqual([
+      [LUIS, "Codirector(a)"],
+      [ANA, "Director(a)"],
+    ]);
   });
 
-  it("a director link sets a session cookie and redirects to a clean URL", async () => {
-    const res = await director.get(new URL(directorLink).pathname);
+  it("a link sets a session cookie and redirects to the document, without the secret", async () => {
+    ana = await s.browser();
+    const res = await ana.get(new URL(anaThesisLink).pathname);
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/");
+    expect(res.headers.get("location")).toBe("/d/thesis");
     const set = res.headers.getSetCookie().join("\n");
     expect(set).toMatch(/__Host-dr_session=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; Secure; SameSite=Lax; HttpOnly/);
-    expect(set).not.toContain(directorLink.split("/").pop()!);
-    const home = await director.get("/");
-    expect(home.status).toBe(303);
-    expect(home.headers.get("location")).toBe("/v/1");
-    const page = await director.get("/v/1");
+    expect(set).not.toContain(anaThesisLink.split("/").pop()!);
+    await ana.login();
+    const doc = await ana.get("/d/thesis");
+    expect(doc.status).toBe(303);
+    expect(doc.headers.get("location")).toBe("/d/thesis/v/1");
+    const page = await ana.get("/d/thesis/v/1");
     expect(page.status).toBe(200);
-    const htmlText = await page.text();
-    expect(htmlText).toContain("Dra. Ana Torres Ruiz");
-    expect(htmlText).toContain('<meta name="csrf-token"');
-    await director.login();
-    await codirector.get(new URL(codirectorLink).pathname);
-    await codirector.login();
+    const text = await page.text();
+    expect(text).toContain(ANA);
+    expect(text).toContain('<meta name="csrf-token"');
+    // The thesis is in Spanish: its pages too, and the script's messages.
+    expect(text).toContain('<html lang="es">');
+    expect(text).toContain("Comentar un punto");
+    expect(text).toContain('"js.reply":"Responder"');
+    luis = await s.browser(luisLink);
+  });
+
+  it("one session holds all of a person's documents: the list, both documents, a role per document", async () => {
+    // Opened with the thesis link only, and still sees the report (the same person).
+    const home = await ana.get("/", { "accept-language": "en" });
+    expect(home.status).toBe(200);
+    const text = await home.text();
+    expect(text).toContain("Q3 report for ACME");
+    expect(text).toContain("Método computacional");
+    expect(text).toContain("Reviewer");
+    const { documents } = await ana.json<{ documents: { slug: string; role: string }[] }>("/api/documents");
+    expect(documents.map((d) => [d.slug, d.role])).toEqual([
+      ["thesis", "Director(a)"],
+      ["report", "Reviewer"],
+    ]);
+    expect((await ana.get("/d/report/v/1")).status).toBe(200);
+    expect(await (await ana.get("/d/report/v/1")).text()).toContain('<html lang="en">');
+    // Opening the other link in the same browser adds it to the session (no question).
+    const again = await ana.get(new URL(anaReportLink).pathname);
+    expect(again.status).toBe(303);
+    expect(again.headers.get("location")).toBe("/d/report");
+    expect(again.headers.getSetCookie()).toEqual([]);
+    // A reviewer with one document goes straight to it.
+    const h = await luis.get("/");
+    expect(h.status).toBe(303);
+    expect(h.headers.get("location")).toBe("/d/thesis");
+  });
+
+  it("a reviewer can't see documents they aren't invited to (404, pages and API)", async () => {
+    for (const p of ["/d/report", "/d/report/v/1", "/d/report/v/1/changes", "/api/documents/report", "/api/documents/report/threads", "/api/documents/report/versions/1/pdf", "/api/documents/paper/versions"]) {
+      expect((await luis.get(p)).status, p).toBe(404);
+    }
+    const { documents } = await luis.json<{ documents: { slug: string }[] }>("/api/documents");
+    expect(documents.map((d) => d.slug)).toEqual(["thesis"]);
+    expect((await luis.send("POST", "/api/documents/report/threads", { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" })).status).toBe(404);
+    expect((await luis.get("/d/thesis/manage")).status).toBe(403);
   });
 
   it("a link opened in a browser with someone else's session asks before switching", async () => {
-    const b = new Browser();
-    await b.get(new URL(codirectorLink).pathname);
-    await b.login();
+    const b = await s.browser(luisLink);
     const oldCookie = b.cookie;
-    const secret = new URL(directorLink).pathname.split("/").pop()!;
-    const page = await b.get(`/acceso/${secret}`);
+    const secret = new URL(anaThesisLink).pathname.split("/").pop()!;
+    const page = await b.get(`/a/${secret}`);
     expect(page.status).toBe(200);
     expect(page.headers.getSetCookie()).toEqual([]);
     expect(page.headers.get("referrer-policy")).toBe("no-referrer");
     const text = await page.text();
-    expect(text).toContain("Entrar como Dra. Ana Torres Ruiz");
-    expect(text).toContain("Dr. Luis Méndez Ortega");
-    expect(((await (await b.get("/api/me")).json()) as { name: string }).name).toBe("Dr. Luis Méndez Ortega");
+    expect(text).toContain(`Entrar como ${ANA}`);
+    expect(text).toContain(LUIS);
+    expect((await b.json<{ name: string }>("/api/me")).name).toBe(LUIS);
     const post = (csrf: string, extra: Record<string, string> = {}) =>
-      fetch(s.url + "/acceso", {
+      fetch(s.url + "/a", {
         method: "POST",
         redirect: "manual",
         headers: { cookie: b.cookie, origin: "null", "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded", ...extra },
@@ -223,39 +288,38 @@ describe("director links", () => {
     const ok = await post(b.csrf);
     expect(ok.status).toBe(303);
     b.cookie = ok.headers.getSetCookie()[0]!.split(";")[0]!;
-    expect(((await (await b.get("/api/me")).json()) as { name: string }).name).toBe("Dra. Ana Torres Ruiz");
+    expect((await b.json<{ name: string }>("/api/me")).name).toBe(ANA);
     expect((await fetch(s.url + "/api/me", { headers: { cookie: oldCookie } })).status).toBe(401);
-    // Its own link again: no question, no new session.
-    const again = await b.get(`/acceso/${secret}`);
-    expect(again.status).toBe(303);
-    expect(again.headers.getSetCookie()).toEqual([]);
   });
 
   it("an invalid link gives 404", async () => {
-    const res = await fetch(s.url + "/acceso/" + "x".repeat(43), { redirect: "manual" });
+    const res = await fetch(s.url + "/a/" + "x".repeat(43), { redirect: "manual" });
     expect(res.status).toBe(404);
     expect(res.headers.getSetCookie()).toEqual([]);
   });
 
   it("malformed links give 404 (not 500) and the path never reaches the logs", async () => {
-    for (const p of ["/acceso/%E0%A4%A", "/acceso/" + "a".repeat(42) + "%", "/acceso/abc%2Fdef", "/acceso/" + "b".repeat(44)]) {
+    for (const p of ["/a/%E0%A4%A", "/a/" + "a".repeat(42) + "%", "/a/abc%2Fdef", "/a/" + "b".repeat(44)]) {
       const res = await fetch(s.url + p, { redirect: "manual" });
       expect(res.status, p).toBe(404);
       expect(res.headers.getSetCookie()).toEqual([]);
     }
-    expect(s.logs.join("\n")).not.toContain("/acceso/");
+    expect(s.logs.join("\n")).not.toContain("/a/");
     expect(s.logs.filter((l) => l.startsWith("error "))).toEqual([]);
   });
 
-  it("directors cannot use owner endpoints", async () => {
-    expect((await director.get("/api/directors")).status).toBe(403);
-    expect((await director.send("POST", "/api/directors", { name: "x" })).status).toBe(403);
+  it("reviewers cannot use owner endpoints", async () => {
+    expect((await ana.get("/api/people")).status).toBe(403);
+    expect((await ana.send("POST", "/api/people", { name: "x" })).status).toBe(403);
+    expect((await ana.send("POST", "/api/documents", { slug: "mine", title: "x" })).status).toBe(403);
+    expect((await ana.send("POST", `/api/invitations/${luisInv}/revoke`, {})).status).toBe(403);
+    expect((await ana.get("/api/documents/thesis/invitations")).status).toBe(403);
   });
 });
 
 describe("comments", () => {
-  it("a director comments on selected text", async () => {
-    const res = await director.send("POST", "/api/threads", {
+  it("a reviewer comments on selected text", async () => {
+    const res = await ana.send("POST", "/api/documents/thesis/threads", {
       version: 1,
       page: 3,
       anchor: "text",
@@ -265,29 +329,30 @@ describe("comments", () => {
     });
     expect(res.status).toBe(201);
     const { thread } = (await res.json()) as {
-      thread: { id: number; section: { id: string }; comments: { body_html: string; author: { name: string } }[]; url: string };
+      thread: { id: number; section: { id: string }; comments: { body_html: string; author: { name: string; role: string } }[]; url: string };
     };
     threadId = thread.id;
     expect(thread.section.id).toBe("01-introduccion");
-    expect(thread.comments[0]!.author.name).toBe("Dra. Ana Torres Ruiz");
+    expect(thread.comments[0]!.author).toMatchObject({ name: ANA, role: "Director(a)" });
     expect(thread.comments[0]!.body_html).toContain("<strong>Sugerencia:</strong>");
     expect(thread.comments[0]!.body_html).toContain("&lt;script&gt;");
     expect(thread.comments[0]!.body_html).not.toContain("<script>");
-    expect(thread.url).toBe(`${ORIGIN}/v/1#hilo-${thread.id}`);
+    expect(thread.url).toBe(`${ORIGIN}/d/thesis/v/1#thread-${thread.id}`);
     await settle();
-    expect(s.telegrams.at(-1)).toContain("Comentario nuevo de Dra. Ana Torres Ruiz");
-    expect(s.telegrams.at(-1)).toContain(`${ORIGIN}/v/1#hilo-${thread.id}`);
-    expect(s.mails.at(-1)!.to).toBe("autor@example.test");
-    expect(s.mails.at(-1)!.text).not.toMatch(/acceso\//);
+    // The owner's notification is in the document's language.
+    expect(s.telegrams.at(-1)).toContain(`Comentario nuevo de ${ANA} (Director(a))`);
+    expect(s.telegrams.at(-1)).toContain(`${ORIGIN}/d/thesis/v/1#thread-${thread.id}`);
+    expect(s.mails.at(-1)!.to).toBe("owner@example.test");
+    expect(s.mails.at(-1)!.text).not.toMatch(/\/a\//);
   });
 
   it("enforces CSRF on cookie-authenticated mutations", async () => {
     const body = { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
-    expect((await director.send("POST", "/api/threads", body, { "x-csrf-token": "wrong" })).status).toBe(403);
-    expect((await director.send("POST", "/api/threads", body, { origin: "https://evil.example" })).status).toBe(403);
-    const noOrigin = await fetch(s.url + "/api/threads", {
+    expect((await ana.send("POST", "/api/documents/thesis/threads", body, { "x-csrf-token": "wrong" })).status).toBe(403);
+    expect((await ana.send("POST", "/api/documents/thesis/threads", body, { origin: "https://evil.example" })).status).toBe(403);
+    const noOrigin = await fetch(s.url + "/api/documents/thesis/threads", {
       method: "POST",
-      headers: { cookie: director.cookie, "x-csrf-token": director.csrf, "content-type": "application/json" },
+      headers: { cookie: ana.cookie, "x-csrf-token": ana.csrf, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     expect(noOrigin.status).toBe(403);
@@ -301,7 +366,8 @@ describe("comments", () => {
       { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "   " },
       { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x".repeat(10_001) },
     ];
-    for (const b of bad) expect((await director.send("POST", "/api/threads", b)).status).toBe(400);
+    for (const b of bad) expect((await ana.send("POST", "/api/documents/thesis/threads", b)).status).toBe(400);
+    expect((await ana.send("POST", "/api/documents/thesis/threads", { ...bad[0], page: 1, version: 7 })).status).toBe(404);
   });
 
   it("numeric fields and ids must be integers in range (400, no stack trace in the logs)", async () => {
@@ -313,173 +379,182 @@ describe("comments", () => {
       { ...base, version: 1, page: 1.5 },
       { ...base, version: 1, page: 1e12 },
     ]) {
-      expect((await director.send("POST", "/api/threads", b)).status, JSON.stringify(b)).toBe(400);
+      expect((await ana.send("POST", "/api/documents/thesis/threads", b)).status, JSON.stringify(b)).toBe(400);
     }
-    for (const p of ["/api/threads/abc", "/api/threads/99999999999", "/api/threads?version=abc", "/api/versions/0", "/api/versions/1e3/pdf"]) {
-      expect((await director.get(p)).status, p).toBe(400);
+    for (const p of ["/api/threads/abc", "/api/threads/99999999999", "/api/documents/thesis/threads?version=abc", "/api/documents/thesis/versions/0", "/api/documents/thesis/versions/1e3/pdf"]) {
+      expect((await ana.get(p)).status, p).toBe(400);
     }
-    expect((await director.send("POST", "/api/threads/1.5/comments", { body: "x" })).status).toBe(400);
+    expect((await ana.send("POST", "/api/threads/1.5/comments", { body: "x" })).status).toBe(400);
     expect(s.logs.filter((l) => l.startsWith("error "))).toEqual([]);
   });
 
-  it("threads: replies from owner and codirector, edit and soft delete of own comments only", async () => {
-    let res = await ownerJson("POST", `/api/threads/${threadId}/comments`, { body: "Gracias, agrego la cita." });
+  it("threads: replies from the owner and a co-director, edit and soft delete of one's own comments only", async () => {
+    let res = await s.ownerJson("POST", `/api/threads/${threadId}/comments`, { body: "Gracias, agrego la cita." });
     expect(res.status).toBe(201);
-    res = await codirector.send("POST", `/api/threads/${threadId}/comments`, { body: "De acuerdo con el director." });
+    res = await luis.send("POST", `/api/threads/${threadId}/comments`, { body: "De acuerdo con el director." });
     expect(res.status).toBe(201);
     const { thread, comment_id } = (await res.json()) as { thread: { comments: { id: number; mine: boolean }[] }; comment_id: number };
     expect(thread.comments).toHaveLength(3);
+    expect(thread.comments.map((c) => c.mine)).toEqual([false, false, true]);
     await settle();
-    expect(s.telegrams.at(-1)).toContain("Respuesta de Dr. Luis Méndez Ortega");
+    expect(s.telegrams.at(-1)).toContain(`Respuesta de ${LUIS}`);
     const before = s.telegrams.length;
 
-    // The director can't edit the codirector's comment.
-    expect((await director.send("PATCH", `/api/comments/${comment_id}`, { body: "hack" })).status).toBe(403);
-    res = await codirector.send("PATCH", `/api/comments/${comment_id}`, { body: "Totalmente de acuerdo." });
+    expect((await ana.send("PATCH", `/api/comments/${comment_id}`, { body: "hack" })).status).toBe(403);
+    res = await luis.send("PATCH", `/api/comments/${comment_id}`, { body: "Totalmente de acuerdo." });
     expect(res.status).toBe(200);
-    res = await codirector.send("DELETE", `/api/comments/${comment_id}`);
+    res = await luis.send("DELETE", `/api/comments/${comment_id}`);
     const after = (await res.json()) as { thread: { comments: { id: number; deleted: boolean; body: string | null }[] } };
     const deleted = after.thread.comments.find((c) => c.id === comment_id)!;
     expect(deleted.deleted).toBe(true);
     expect(deleted.body).toBeNull();
-    // The row is still there (soft delete).
-    const rows = await s.repo.db.query("select deleted_at from comments where id = $1", [comment_id]);
-    expect(rows).toHaveLength(1);
+    expect(await s.repo.db.query("select deleted_at from comments where id = $1", [comment_id])).toHaveLength(1);
     await settle();
-    // The codirector's edit notifies the owner (once); deletes don't notify.
+    // The edit notifies the owner (once); deletes don't notify.
     expect(s.telegrams.slice(before)).toHaveLength(1);
-    expect(s.telegrams.at(-1)).toContain("Dr. Luis Méndez Ortega editó un comentario");
+    expect(s.telegrams.at(-1)).toContain(`${LUIS} (Codirector(a)) editó un comentario`);
   });
 
   it("only the opener or the owner can resolve; anyone who sees the thread can reopen", async () => {
-    // threadId was opened by the director.
-    let res = await codirector.send("POST", `/api/threads/${threadId}/resolve`);
+    let res = await luis.send("POST", `/api/threads/${threadId}/resolve`, undefined, { "accept-language": "en" });
     expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: string }).error).toMatch(/Solo quien abrió el hilo/);
-    const asCodir = (await (await codirector.get(`/api/threads/${threadId}`)).json()) as { thread: { can_resolve: boolean } };
-    expect(asCodir.thread.can_resolve).toBe(false);
-    res = await director.send("POST", `/api/threads/${threadId}/resolve`);
-    expect(((await res.json()) as { thread: { status: string; resolved_by: string; can_resolve: boolean } }).thread).toMatchObject({
-      status: "resolved",
-      resolved_by: "Dra. Ana Torres Ruiz",
-      can_resolve: true,
-    });
-    res = await owner(`/api/threads?status=open`);
+    expect(((await res.json()) as { error: string }).error).toMatch(/Only whoever opened the thread/);
+    expect((await luis.json<{ thread: { can_resolve: boolean } }>(`/api/threads/${threadId}`)).thread.can_resolve).toBe(false);
+    res = await ana.send("POST", `/api/threads/${threadId}/resolve`);
+    expect(((await res.json()) as { thread: unknown }).thread).toMatchObject({ status: "resolved", resolved_by: ANA, can_resolve: true });
+    res = await s.owner("/api/documents/thesis/threads?status=open");
     expect(((await res.json()) as { threads: unknown[] }).threads).toHaveLength(0);
-    // The codirector can't resolve it, but can reopen it.
-    res = await codirector.send("POST", `/api/threads/${threadId}/reopen`);
-    expect(((await res.json()) as { thread: { status: string; resolved_by: string | null } }).thread).toMatchObject({ status: "open", resolved_by: null });
-    // The owner can always resolve.
-    res = await owner(`/api/threads/${threadId}/resolve`, { method: "POST" });
-    expect(((await res.json()) as { thread: { status: string } }).thread.status).toBe("resolved");
-    res = await owner(`/api/threads/${threadId}/reopen`, { method: "POST" });
+    res = await luis.send("POST", `/api/threads/${threadId}/reopen`);
+    expect(((await res.json()) as { thread: unknown }).thread).toMatchObject({ status: "open", resolved_by: null });
+    res = await s.owner(`/api/threads/${threadId}/resolve`, { method: "POST" });
+    expect(((await res.json()) as { thread: { status: string; resolved_by: string } }).thread).toMatchObject({ status: "resolved", resolved_by: "Eduardo Ejemplo" });
+    res = await s.owner(`/api/threads/${threadId}/reopen`, { method: "POST" });
     expect(((await res.json()) as { thread: { status: string } }).thread.status).toBe("open");
   });
 
-  it("visibility setting: 'own' hides other directors' threads and comments", async () => {
-    let res = await codirector.send("POST", "/api/threads", {
-      version: 1,
-      page: 4,
-      anchor: "point",
-      rects: [{ x: 0.3, y: 0.4, w: 0, h: 0 }],
-      body: "Falta una figura aquí.",
-    });
-    const codirThread = ((await res.json()) as { thread: { id: number } }).thread.id;
-    // An owner thread where both directors reply.
-    res = await ownerJson("POST", "/api/threads", { version: 1, page: 5, anchor: "point", rects: [{ x: 0.2, y: 0.2, w: 0, h: 0 }], body: "¿Les parece bien esta conclusión?" });
+  it("visibility 'own' hides other reviewers' threads and comments, per document", async () => {
+    let res = await luis.send("POST", "/api/documents/thesis/threads", { version: 1, page: 4, anchor: "point", rects: [{ x: 0.3, y: 0.4, w: 0, h: 0 }], body: "Falta una figura aquí." });
+    const luisThread = ((await res.json()) as { thread: { id: number } }).thread.id;
+    res = await s.ownerJson("POST", "/api/documents/thesis/threads", { version: 1, page: 5, anchor: "point", rects: [{ x: 0.2, y: 0.2, w: 0, h: 0 }], body: "¿Les parece bien esta conclusión?" });
     const ownerThread = ((await res.json()) as { thread: { id: number } }).thread.id;
-    await codirector.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del codirector" });
-    await director.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del director" });
-    // Legacy row (resolved before resolved_by_kind existed) by the codirector.
-    await s.repo.db.query("update threads set status = 'resolved', resolved_by = $2, resolved_at = now() where id = $1", [ownerThread, "Dr. Luis Méndez Ortega"]);
+    await luis.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del codirector" });
+    await ana.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del director" });
+    await luis.send("POST", `/api/threads/${ownerThread}/resolve`).then(async (r) => expect(r.status).toBe(403));
+    await s.owner(`/api/threads/${ownerThread}/resolve`, { method: "POST" });
+    // The co-director's own thread, resolved by him.
+    await luis.send("POST", `/api/threads/${luisThread}/resolve`);
+    // A thread in the report, where Ana is the only reviewer (visibility there stays "all").
+    res = await ana.send("POST", "/api/documents/report/threads", { version: 1, page: 2, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "Report remark" });
+    expect(res.status).toBe(201);
 
-    const list = async (b: Browser) =>
-      ((await (await b.get("/api/threads?status=all")).json()) as {
-        threads: { id: number; resolved_by: string | null; comments: { author: { name: string }; body: string | null }[] }[];
-      }).threads;
-    expect((await list(director)).length).toBe(3);
-    expect((await ownerJson("PUT", "/api/settings", { comments_visibility: "own" })).status).toBe(200);
-    const mine = await list(director);
+    type T = { id: number; resolved_by: string | null; comments: { author: { name: string }; body: string | null }[] };
+    const list = async (b: Browser, doc = "thesis") => (await b.json<{ threads: T[] }>(`/api/documents/${doc}/threads?status=all`)).threads;
+    expect((await list(ana)).length).toBe(3);
+    expect((await s.ownerJson("PATCH", "/api/documents/thesis", { visibility: "own" })).status).toBe(200);
+    const mine = await list(ana);
     expect(mine.map((t) => t.id).sort()).toEqual([threadId, ownerThread].sort());
     const ot = mine.find((t) => t.id === ownerThread)!;
-    expect(ot.comments.map((c) => c.author.name)).toEqual(["Eduardo Ejemplo", "Dra. Ana Torres Ruiz"]);
+    expect(ot.comments.map((c) => c.author.name)).toEqual(["Eduardo Ejemplo", ANA]);
     expect(JSON.stringify(mine)).not.toContain("Opinión del codirector");
     expect(JSON.stringify(mine)).not.toContain("Méndez");
-    expect(ot.resolved_by).toBeNull();
-    const single = (await (await director.get(`/api/threads/${ownerThread}`)).json()) as { thread: { comments: unknown[] } };
-    expect(single.thread.comments).toHaveLength(2);
-    expect((await list(codirector)).map((t) => t.id).sort()).toEqual([codirThread, ownerThread].sort());
-    expect((await director.send("POST", `/api/threads/${codirThread}/comments`, { body: "x" })).status).toBe(404);
+    expect(ot.resolved_by).toBe("Eduardo Ejemplo");
+    expect((await ana.json<{ thread: { comments: unknown[] } }>(`/api/threads/${ownerThread}`)).thread.comments).toHaveLength(2);
+    const his = await list(luis);
+    expect(his.map((t) => t.id).sort()).toEqual([luisThread, ownerThread].sort());
+    expect(his.find((t) => t.id === luisThread)!.resolved_by).toBe(LUIS);
+    expect((await ana.send("POST", `/api/threads/${luisThread}/comments`, { body: "x" })).status).toBe(404);
+    expect((await ana.get(`/api/threads/${luisThread}`)).status).toBe(404);
+    // Other documents keep their own setting.
+    expect((await list(ana, "report")).map((t) => t.comments[0]!.body)).toEqual(["Report remark"]);
     // The owner still sees everything.
-    const all = (await (await owner(`/api/threads/${ownerThread}`)).json()) as { thread: { comments: unknown[]; resolved_by: string } };
+    const all = (await (await s.owner(`/api/threads/${ownerThread}`)).json()) as { thread: { comments: unknown[] } };
     expect(all.thread.comments).toHaveLength(3);
-    expect(all.thread.resolved_by).toBe("Dr. Luis Méndez Ortega");
-    await ownerJson("PUT", "/api/settings", { comments_visibility: "all" });
-    expect((await list(director)).length).toBe(3);
-    await owner(`/api/threads/${ownerThread}/reopen`, { method: "POST" });
+    await s.ownerJson("PATCH", "/api/documents/thesis", { visibility: "all" });
+    expect((await list(ana)).length).toBe(3);
+    await s.owner(`/api/threads/${ownerThread}/reopen`, { method: "POST" });
   });
 
-  it("serves the PDF only with a session", async () => {
-    const res = await director.get("/api/versions/1/pdf");
+  it("serves the PDF only to whoever may see the document", async () => {
+    const res = await ana.get("/api/documents/thesis/versions/1/pdf");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-disposition")).toBe('inline; filename="thesis-v1.pdf"');
     expect(Buffer.from(await res.arrayBuffer()).subarray(0, 5).toString()).toBe("%PDF-");
   });
 });
 
 describe("versions and changes", () => {
-  it("publishing v2 emails opted-in directors without their link, and computes the diff", async () => {
+  it("publishing v2 emails the document's opted-in reviewers without their link, in its language, and computes the diff", async () => {
     const mailsBefore = s.mails.length;
-    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(true), sampleProgress(true), "Atendí los comentarios del capítulo 1") });
+    const res = await s.publish("thesis", sampleThesis(true), sampleProgress(true), "Atendí los comentarios del capítulo 1");
     expect(res.status).toBe(201);
     await settle();
     const newMails = s.mails.slice(mailsBefore);
     expect(newMails.map((m) => m.to)).toEqual(["director@example.test"]);
-    expect(newMails[0]!.subject).toContain("v2");
-    expect(newMails[0]!.text).not.toContain("/acceso/");
+    expect(newMails[0]!.subject).toContain("Nueva versión (v2)");
+    expect(newMails[0]!.text).not.toContain("/a/");
     expect(newMails[0]!.text).toContain("Atendí los comentarios");
+    expect(newMails[0]!.text).toContain(`${ORIGIN}/d/thesis/v/2`);
 
-    const diff = (await (await director.get("/api/versions/2/diff")).json()) as {
-      diff: { previous: number; mode: string; sections: { id: string; words_delta: number; added: number; hunks: { op: string; text: string }[][] }[] };
-    };
-    expect(diff.diff.previous).toBe(1);
-    expect(diff.diff.mode).toBe("sections");
-    const intro = diff.diff.sections.find((c) => c.id === "01-introduccion")!;
+    const diff = (await ana.json<{ diff: { previous: number; mode: string; sections: { id: string; words_delta: number; added: number; hunks: { op: string; text: string }[][] }[] } }>("/api/documents/thesis/versions/2/diff")).diff;
+    expect(diff.previous).toBe(1);
+    expect(diff.mode).toBe("sections");
+    const intro = diff.sections.find((c) => c.id === "01-introduccion")!;
     expect(intro.words_delta).toBe(350);
     expect(intro.added).toBeGreaterThan(0);
     expect(intro.hunks.flat().some((o) => o.op === "add" && o.text.includes("anonimizar los datos de viajes"))).toBe(true);
-    const marco = diff.diff.sections.find((c) => c.id === "02-marco-teorico")!;
-    expect(marco.hunks).toEqual([]);
+    expect(diff.sections.find((c) => c.id === "02-marco-teorico")!.hunks).toEqual([]);
 
     // Stored with the version, not recomputed.
-    const v2 = await s.repo.getVersion(2);
-    expect(await s.repo.storedDiff(v2!.id)).toMatchObject({ previous: 1 });
-    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"stored\"') where version_id = $1", [v2!.id]);
-    expect(((await (await director.get("/api/versions/2/diff")).json()) as { diff: { mode: string } }).diff.mode).toBe("stored");
-    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"sections\"') where version_id = $1", [v2!.id]);
+    const doc = (await s.repo.documentBySlug("thesis"))!;
+    const v2 = (await s.repo.getVersion(doc.id, 2))!;
+    expect(await s.repo.storedDiff(v2.id)).toMatchObject({ previous: 1 });
+    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"stored\"') where version_id = $1", [v2.id]);
+    expect((await ana.json<{ diff: { mode: string } }>("/api/documents/thesis/versions/2/diff")).diff.mode).toBe("stored");
+    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"sections\"') where version_id = $1", [v2.id]);
 
-    const page = await director.get("/v/2/cambios");
-    const text = await page.text();
-    expect(text).toContain("Avance por capítulo");
+    const text = await (await ana.get("/d/thesis/v/2/changes")).text();
+    expect(text).toContain("Avance por sección");
     expect(text).toContain("+350");
+    expect((await ana.get("/d/thesis/v/latest")).headers.get("location")).toBe("/d/thesis/v/2");
   });
 
   it("comments stay with the version they were made on", async () => {
-    const v1 = (await (await owner("/api/threads?version=1&status=all")).json()) as { threads: unknown[] };
-    const v2 = (await (await owner("/api/threads?version=latest&status=all")).json()) as { threads: unknown[] };
+    const v1 = (await (await s.owner("/api/documents/thesis/threads?version=1&status=all")).json()) as { threads: unknown[] };
+    const v2 = (await (await s.owner("/api/documents/thesis/threads?version=latest&status=all")).json()) as { threads: unknown[] };
     expect(v1.threads.length).toBe(3);
     expect(v2.threads.length).toBe(0);
   });
 });
 
-describe("owner web login", () => {
-  it("logs in with the token once and gets a session; wrong token is rejected", async () => {
-    const b = new Browser();
-    const form = await fetch(s.url + "/entrar");
+describe("archived documents", () => {
+  it("are read-only for everyone and listed apart", async () => {
+    expect((await s.ownerJson("POST", "/api/documents/report/archive", {})).status).toBe(200);
+    const body = { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
+    let res = await ana.send("POST", "/api/documents/report/threads", body, { "accept-language": "en" });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/archived/);
+    expect((await s.ownerJson("POST", "/api/documents/report/threads", body)).status).toBe(409);
+    expect((await s.publish("report")).status).toBe(409);
+    const [t] = (await ana.json<{ threads: { id: number }[] }>("/api/documents/report/threads")).threads;
+    expect((await ana.send("POST", `/api/threads/${t!.id}/comments`, { body: "x" })).status).toBe(409);
+    // Still readable.
+    expect((await ana.get("/d/report/v/1")).status).toBe(200);
+    expect(await (await ana.get("/d/report/v/1")).text()).toContain('data-archived="1"');
+    expect(await (await s.owner("/", { headers: { "accept-language": "en" } })).text()).toContain("1 archived document");
+    expect((await s.ownerJson("POST", "/api/documents/report/unarchive", {})).status).toBe(200);
+    expect((await ana.send("POST", "/api/documents/report/threads", body)).status).toBe(201);
+  });
+});
+
+describe("owner web login and dashboard", () => {
+  it("logs in with the token once and gets a session; a wrong token is rejected", async () => {
+    const b = new Browser(s.url);
+    const form = await fetch(s.url + "/login");
     const pre = form.headers.getSetCookie()[0]!.split(";")[0]!;
     const preValue = pre.split("=")[1]!;
     const post = (token: string, origin = ORIGIN) =>
-      fetch(s.url + "/entrar", {
+      fetch(s.url + "/login", {
         method: "POST",
         redirect: "manual",
         headers: { cookie: pre, origin, "content-type": "application/x-www-form-urlencoded" },
@@ -490,52 +565,68 @@ describe("owner web login", () => {
     const ok = await post(OWNER_TOKEN);
     expect(ok.status).toBe(303);
     b.cookie = ok.headers.getSetCookie().find((c) => c.startsWith("__Host-dr_session="))!.split(";")[0]!;
-    const dash = await b.get("/");
-    const text = await dash.text();
-    expect(text).toContain("Tu tesis");
-    expect(text).toContain("Dr. Luis Méndez Ortega");
+    const text = await (await b.get("/", { "accept-language": "en" })).text();
+    expect(text).toContain("<h1>Documents</h1>");
+    expect(text).toContain("Método computacional");
+    expect(text).toContain(LUIS);
+    const manage = await (await b.get("/d/thesis/manage", { "accept-language": "en" })).text();
+    expect(manage).toContain("Codirector(a)");
+    expect(manage).toContain('list="role-suggestions"');
+    expect(manage).toContain('<option value="Co-director">');
     expect(s.logs.join("\n")).not.toContain(OWNER_TOKEN);
   });
 
   it("rate-limits the login endpoint", async () => {
     let last = 0;
     for (let i = 0; i < 12; i++) {
-      last = (await fetch(s.url + "/entrar", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body: "token=x" })).status;
+      last = (await fetch(s.url + "/login", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body: "token=x" })).status;
     }
     expect(last).toBe(429);
   });
 });
 
 describe("revocation and rotation", () => {
-  it("revoking a director ends their session; rotating gives a new link and kills the old one", async () => {
-    let res = await ownerJson("POST", `/api/directors/${directorId}/revoke`, {});
-    expect(res.status).toBe(200);
-    expect((await director.get("/api/me")).status).toBe(401);
-    expect((await fetch(s.url + new URL(directorLink).pathname, { redirect: "manual" })).status).toBe(404);
+  it("revoking ends the access to that document only; sessions opened only with that link end", async () => {
+    // Ana's browser holds both links; a second browser has only the report link.
+    const onlyReport = await s.browser(anaReportLink);
+    expect((await onlyReport.get("/d/thesis/v/1")).status).toBe(200);
+    expect((await s.ownerJson("POST", `/api/invitations/${anaReportInv}/revoke`, {})).status).toBe(200);
+    expect((await onlyReport.get("/api/me")).status).toBe(401);
+    expect((await ana.get("/api/me")).status).toBe(200);
+    expect((await ana.get("/d/report/v/1")).status).toBe(404);
+    expect((await ana.get("/d/thesis/v/1")).status).toBe(200);
+    expect((await fetch(s.url + new URL(anaReportLink).pathname, { redirect: "manual" })).status).toBe(404);
+  });
 
-    res = await ownerJson("POST", `/api/directors/${directorId}/rotate`, { send_link: true });
+  it("rotating gives a new link and ends the sessions opened with the old one", async () => {
+    const res = await s.ownerJson("POST", `/api/invitations/${anaThesisInv}/rotate`, { send_link: true });
     const r = (await res.json()) as { link: string; email: { sent: boolean } };
-    expect(r.link).not.toBe(directorLink);
+    expect(r.link).not.toBe(anaThesisLink);
     expect(r.email.sent).toBe(true);
     expect(s.mails.at(-1)!.to).toBe("director@example.test");
     expect(s.mails.at(-1)!.text).toContain(r.link);
-    const b = new Browser();
-    expect((await b.get(new URL(r.link).pathname)).status).toBe(303);
-    await b.login();
-    expect(b.csrf).toHaveLength(43);
+    expect(s.mails.at(-1)!.subject).toContain("Su enlace para revisar el documento");
+    expect((await ana.get("/api/me")).status).toBe(401);
+    expect((await fetch(s.url + new URL(anaThesisLink).pathname, { redirect: "manual" })).status).toBe(404);
+    ana = await s.browser(r.link);
+    expect(ana.csrf).toHaveLength(43);
+    anaThesisLink = r.link;
     expect(s.logs.join("\n")).not.toContain(r.link.split("/").pop()!);
+    // Rotating a revoked invitation reactivates it.
+    const again = (await (await s.ownerJson("POST", `/api/invitations/${anaReportInv}/rotate`, {})).json()) as { link: string; invitation: { active: boolean } };
+    expect(again.invitation.active).toBe(true);
+    expect((await ana.get("/d/report/v/1")).status).toBe(200);
   });
 });
 
 describe("HTML form posts that carry Origin: null", () => {
   it("accept Origin: null only with Sec-Fetch-Site: same-origin", async () => {
-    // A fresh server: the login limiter of the shared one is exhausted by now.
     const fresh = await startTestServer();
     try {
-      const f = await fetch(fresh.url + "/entrar");
+      const f = await fetch(fresh.url + "/login");
       const pre = f.headers.getSetCookie()[0]!.split(";")[0]!;
       const post = (site: string) =>
-        fetch(fresh.url + "/entrar", {
+        fetch(fresh.url + "/login", {
           method: "POST",
           redirect: "manual",
           headers: { cookie: pre, origin: "null", "sec-fetch-site": site, "content-type": "application/x-www-form-urlencoded" },
@@ -549,66 +640,40 @@ describe("HTML form posts that carry Origin: null", () => {
   });
 });
 
-describe("daily digest and the owner client", () => {
-  it("sends the digest once per local day, after DIGEST_HOUR", async () => {
-    const { runDigest } = await import("../src/server/main.js");
-    const { loadConfig } = await import("../src/config.js");
-    const { Notifier } = await import("../src/notify/notify.js");
-    const sent: string[] = [];
-    const notifier = new Notifier({
-      publicUrl: ORIGIN,
-      thesisTitle: async () => "T",
-      telegram: { send: async (t) => void sent.push(t) },
-      mailer: null,
-      ownerEmail: "",
-      instant: false,
-      log: () => undefined,
-    });
-    const config = loadConfig({ DIGEST_HOUR: "8", TZ: "America/Mexico_City" });
-    const now = new Date(); // comments in this test file were written moments ago
-    const local = (h: number) => {
-      // A time today (Mexico City) at hour h; the test only needs "before"/"after".
-      const d = new Date(now);
-      d.setUTCHours(h + 6, 30, 0, 0);
-      return d;
-    };
-    expect(await runDigest(config, s.repo, notifier, local(7))).toBe(false); // before 8:00
-    const at9 = local(9);
-    await s.repo.db.query("delete from digest_runs");
-    // Pretend the comments were written in the 24 h before 9:00.
-    await s.repo.db.query("update comments set created_at = $1", [new Date(at9.getTime() - 3600_000)]);
-    expect(await runDigest(config, s.repo, notifier, at9)).toBe(true);
-    expect(sent[0]).toMatch(/Resumen diario: \d+ comentario/);
-    expect(await runDigest(config, s.repo, notifier, new Date(at9.getTime() + 3600_000))).toBe(false); // same day
-  });
-
-  it("the CLI client publishes and lists with the owner token", async () => {
+describe("the owner's client", () => {
+  it("publishes and lists with the owner token", async () => {
     const { Client } = await import("../src/client.js");
     const { writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
     await writeFile(join(s.dir, "t.pdf"), sampleThesis(true));
     await writeFile(join(s.dir, "a.json"), JSON.stringify(sampleProgress(true)));
     const client = new Client({ url: s.url, token: OWNER_TOKEN });
-    const r = await client.publish(join(s.dir, "t.pdf"), join(s.dir, "a.json"), "desde el cliente");
+    const r = await client.publish("thesis", join(s.dir, "t.pdf"), { path: join(s.dir, "a.json") }, "from the client");
     expect(r.version.number).toBe(3);
-    const { threads } = await client.threads({ status: "all" });
+    const { threads } = await client.threads("thesis", { status: "all" });
     expect(threads.length).toBeGreaterThan(0);
-    await expect(new Client({ url: s.url, token: "nope" }).threads({})).rejects.toThrow(/Token no válido/);
+    await expect(new Client({ url: s.url, token: "nope" }).threads("thesis", {})).rejects.toThrow(/Invalid token/);
+    await expect(client.threads("nope", {})).rejects.toThrow(/No such document/);
   });
 });
 
 describe("untrusted text", () => {
   it("stores comments without control or bidi characters", async () => {
-    const res = await codirector.send("POST", "/api/threads", {
+    const res = await luis.send("POST", "/api/documents/thesis/threads", {
       version: 1,
       page: 2,
       anchor: "point",
       rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }],
-      body: "ok \u001b[2J\u001b]0;x\u0007 \u202efin\u0000\r\nlínea 2",
+      body: "ok \u001b[2J\u001b]0;x\u0007 ‮fin\u0000\r\nlínea 2",
     });
     expect(res.status).toBe(201);
     const { thread } = (await res.json()) as { thread: { comments: { body: string }[] } };
     expect(thread.comments[0]!.body).toBe("ok [2J]0;x fin\nlínea 2");
+  });
+
+  it("names and titles are one line", async () => {
+    const res = await s.ownerJson("POST", "/api/people", { name: "Dra.\nB‮", email: "" });
+    expect(((await res.json()) as { person: { name: string } }).person.name).toBe("Dra. B");
   });
 });
 
@@ -628,13 +693,13 @@ describe("owner sessions", () => {
     expect(await before.getSession(other.id, () => 3600_000)).toBeNull();
   });
 
-  it("«Cerrar todas las sesiones» closes the owner's web sessions and, if asked, the directors'", async () => {
+  it("«close all sessions» closes the owner's web sessions and, if asked, the reviewers'", async () => {
     const fresh = await startTestServer();
     try {
       const login = async () => {
-        const f = await fetch(fresh.url + "/entrar");
+        const f = await fetch(fresh.url + "/login");
         const pre = f.headers.getSetCookie()[0]!.split(";")[0]!;
-        const ok = await fetch(fresh.url + "/entrar", {
+        const ok = await fetch(fresh.url + "/login", {
           method: "POST",
           redirect: "manual",
           headers: { cookie: pre, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
@@ -642,36 +707,29 @@ describe("owner sessions", () => {
         });
         return ok.headers.getSetCookie().find((c) => c.startsWith("__Host-dr_session="))!.split(";")[0]!;
       };
-      const bearer = { authorization: `Bearer ${OWNER_TOKEN}`, "content-type": "application/json" };
-      const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: bearer, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
-      const dCookie = (await fetch(fresh.url + new URL(d.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
+      await fresh.createDoc("d");
+      const { link, invitationId } = await fresh.invite("d", { name: "Dr. X" });
+      const reviewer = await fresh.browser(link);
       const me = (cookie: string) => fetch(fresh.url + "/api/me", { headers: { cookie } }).then((r) => r.status);
       const web1 = await login();
       const web2 = await login();
-      let r = await fetch(fresh.url + "/api/sessions/close-all", { method: "POST", headers: bearer, body: JSON.stringify({}) });
-      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 2, directors: 0 });
-      expect([await me(web1), await me(web2), await me(dCookie)]).toEqual([401, 401, 200]);
-      // From the browser (cookie + CSRF), directors too; the response clears the cookie.
+      let r = await fresh.ownerJson("POST", "/api/sessions/close-all", {});
+      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 2, reviewers: 0 });
+      expect([await me(web1), await me(web2), await me(reviewer.cookie)]).toEqual([401, 401, 200]);
       const web3 = await login();
       const csrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie: web3 } })).json()) as { csrf: string }).csrf;
       r = await fetch(fresh.url + "/api/sessions/close-all", {
         method: "POST",
         headers: { cookie: web3, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" },
-        body: JSON.stringify({ directors: true }),
+        body: JSON.stringify({ reviewers: true }),
       });
-      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 1, directors: 1 });
+      expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 1, reviewers: 1 });
       expect(r.headers.getSetCookie()[0]).toMatch(/^__Host-dr_session=; .*Max-Age=0/);
-      expect([await me(web3), await me(dCookie)]).toEqual([401, 401]);
-      // Directors can't do it.
-      const d2 = (await (await fetch(fresh.url + `/api/directors/1/rotate`, { method: "POST", headers: bearer, body: "{}" })).json()) as { link: string };
-      const d2Cookie = (await fetch(fresh.url + new URL(d2.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
-      const dcsrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie: d2Cookie } })).json()) as { csrf: string }).csrf;
-      r = await fetch(fresh.url + "/api/sessions/close-all", {
-        method: "POST",
-        headers: { cookie: d2Cookie, origin: ORIGIN, "x-csrf-token": dcsrf, "content-type": "application/json" },
-        body: "{}",
-      });
-      expect(r.status).toBe(403);
+      expect([await me(web3), await me(reviewer.cookie)]).toEqual([401, 401]);
+      // Reviewers can't do it.
+      const rot = (await (await fresh.ownerJson("POST", `/api/invitations/${invitationId}/rotate`, {})).json()) as { link: string };
+      const again = await fresh.browser(rot.link);
+      expect((await again.send("POST", "/api/sessions/close-all", {})).status).toBe(403);
     } finally {
       await fresh.stop();
     }
@@ -679,33 +737,23 @@ describe("owner sessions", () => {
 });
 
 describe("write limits", () => {
-  it("cap each director's comments per day and don't reset with a new session", async () => {
-    const fresh = await startTestServer({ MAX_DIRECTOR_COMMENTS_PER_DAY: "3" });
+  it("cap each reviewer's comments per day over all their documents, and don't reset with a new session", async () => {
+    const fresh = await startTestServer({ MAX_REVIEWER_COMMENTS_PER_DAY: "3" });
     try {
-      const bearer = { authorization: `Bearer ${OWNER_TOKEN}` };
-      const f = new FormData();
-      f.set("pdf", new Blob([sampleThesis() as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "t.pdf");
-      f.set("progress", new Blob([JSON.stringify(sampleProgress())]), "a.json");
-      expect((await fetch(fresh.url + "/api/versions", { method: "POST", headers: bearer, body: f })).status).toBe(201);
-      const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
-      const session = async () => {
-        const cookie = (await fetch(fresh.url + new URL(d.link).pathname, { redirect: "manual" })).headers.getSetCookie()[0]!.split(";")[0]!;
-        const csrf = ((await (await fetch(fresh.url + "/api/me", { headers: { cookie } })).json()) as { csrf: string }).csrf;
-        return (body: unknown) =>
-          fetch(fresh.url + "/api/threads", {
-            method: "POST",
-            headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf, "content-type": "application/json" },
-            body: JSON.stringify(body),
-          }).then((r) => r.status);
-      };
+      await fresh.createDoc("a");
+      await fresh.createDoc("b");
+      expect((await fresh.publish("a")).status).toBe(201);
+      expect((await fresh.publish("b")).status).toBe(201);
+      const inv = await fresh.invite("a", { name: "Dr. X" });
+      const invB = await fresh.invite("b", { person_id: inv.personId });
       const t = { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
-      const first = await session();
-      expect([await first(t), await first(t), await first(t), await first(t)]).toEqual([201, 201, 201, 429]);
-      const second = await session();
-      expect(await second(t)).toBe(429);
+      const first = await fresh.browser(inv.link);
+      const post = (b: Browser, doc: string) => b.send("POST", `/api/documents/${doc}/threads`, t).then((r) => r.status);
+      expect([await post(first, "a"), await post(first, "a"), await post(first, "b"), await post(first, "b")]).toEqual([201, 201, 201, 429]);
+      const second = await fresh.browser(invB.link);
+      expect(await post(second, "a")).toBe(429);
       // The owner has no daily cap.
-      const own = await fetch(fresh.url + "/api/threads", { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify(t) });
-      expect(own.status).toBe(201);
+      expect((await fresh.ownerJson("POST", "/api/documents/a/threads", t)).status).toBe(201);
     } finally {
       await fresh.stop();
     }

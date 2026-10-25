@@ -1,114 +1,127 @@
-// Owner dashboard: publish a version, manage director links, settings.
+// The owner's pages: the dashboard (documents, people, sessions) and a
+// document's management page (publish, invitations, settings, archive).
 
-import { api, el } from "/static/common.js";
+import { api, el, t } from "/static/common.js";
 
+const DOC = document.body.dataset.document ?? "";
+const DOC_API = `/api/documents/${encodeURIComponent(DOC)}`;
 const linkBox = document.getElementById("link-result");
 
+const fail = (err) => alert(err.message);
+
 function showLink(name, link, email) {
-  const input = el("input", { type: "text", readonly: true, value: link, class: "link-input", "aria-label": "Enlace" });
+  const input = el("input", { type: "text", readonly: true, value: link, class: "link-input", "aria-label": t("js.link") });
   const copy = el("button", {
     type: "button",
-    text: "Copiar",
+    text: t("js.copy"),
     onclick: async () => {
       input.select();
       try {
         await navigator.clipboard.writeText(link);
-        copy.textContent = "Copiado";
+        copy.textContent = t("js.copied");
       } catch {
         document.execCommand("copy");
       }
     },
   });
   linkBox.replaceChildren(
-    el("p", {}, el("strong", { text: `Enlace de ${name}` }), " — se muestra solo esta vez. Envíalo por un canal privado."),
+    el("p", {}, el("strong", { text: t("js.link_of", { name }) }), " — ", t("js.link_once")),
     el("div", { class: "row" }, input, copy),
-    email?.sent ? el("p", { class: "plus", text: "También se envió por correo." }) : null,
-    email && !email.sent && email.error ? el("p", { class: "error", text: `No se envió por correo: ${email.error}` }) : null,
-    el("p", {}, el("a", { href: "/", text: "Actualizar la lista" })),
+    email?.sent ? el("p", { class: "plus", text: t("js.link_emailed") }) : null,
+    email && !email.sent && email.error ? el("p", { class: "error", text: t("js.link_not_emailed", { error: email.error }) }) : null,
+    el("p", {}, el("a", { href: location.pathname, text: t("js.refresh_list") })),
   );
   linkBox.hidden = false;
   linkBox.scrollIntoView({ block: "nearest" });
 }
 
-document.getElementById("director-form")?.addEventListener("submit", async (e) => {
+// --- dashboard ---
+
+document.getElementById("document-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target;
-  const wanted = f.elements.send_link.checked;
   try {
-    const r = await api("POST", "/api/directors", {
-      name: f.elements.name.value,
-      role: f.elements.role.value,
-      email: f.elements.email.value,
-      notify_versions: f.elements.notify_versions.checked,
-      send_link: wanted,
+    const r = await api("POST", "/api/documents", {
+      slug: f.elements.slug.value.trim(),
+      title: f.elements.title.value,
+      language: f.elements.language.value,
+      visibility: f.elements.visibility.value,
+      default_role: f.elements.default_role.value,
     });
-    f.reset();
-    showLink(r.director.name, r.link, wanted ? r.email : null);
+    location.href = `/d/${encodeURIComponent(r.document.slug)}/manage`;
   } catch (err) {
-    alert(err.message);
+    fail(err);
   }
 });
 
-document.querySelector("table.directors")?.addEventListener("click", async (e) => {
-  const b = e.target.closest("button[data-action]");
-  if (!b) return;
-  const id = b.dataset.id;
-  const name = b.dataset.name;
+// Suggest a slug from the title.
+const docForm = document.getElementById("document-form");
+docForm?.elements.title.addEventListener("input", () => {
+  const slug = docForm.elements.slug;
+  if (slug.dataset.touched) return;
+  slug.value = docForm.elements.title.value
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+});
+docForm?.elements.slug.addEventListener("input", (e) => {
+  e.target.dataset.touched = "1";
+});
+
+document.getElementById("person-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
   try {
-    if (b.dataset.action === "rotate") {
-      if (!confirm(`¿Generar un enlace nuevo para ${name}? El enlace anterior dejará de funcionar.`)) return;
-      const send = confirm("¿Enviar el enlace nuevo por correo? (Aceptar = enviar enlace por correo; Cancelar = solo mostrarlo aquí)");
-      const r = await api("POST", `/api/directors/${id}/rotate`, { send_link: send });
-      showLink(r.director.name, r.link, send ? r.email : null);
-    } else if (b.dataset.action === "revoke") {
-      if (!confirm(`¿Revocar el acceso de ${name}? Su enlace y sus sesiones dejan de funcionar.`)) return;
-      await api("POST", `/api/directors/${id}/revoke`, {});
-      location.reload();
-    } else if (b.dataset.action === "edit") {
-      const email = prompt(`Correo de ${name} (vacío para quitarlo):`, b.dataset.email ?? "");
-      if (email === null) return;
-      const notify = email.trim() !== "" && confirm("¿Avisarle por correo cuando publiques una versión nueva?");
-      await api("PATCH", `/api/directors/${id}`, { email: email.trim(), notify_versions: notify });
-      location.reload();
-    }
+    await api("POST", "/api/people", { name: f.elements.name.value, email: f.elements.email.value });
+    location.reload();
   } catch (err) {
-    alert(err.message);
+    fail(err);
   }
 });
 
-document.querySelector("table.directors")?.addEventListener("change", async (e) => {
-  const sel = e.target.closest("select[data-action=notify-replies]");
+const people = document.querySelector("table.people");
+people?.addEventListener("change", async (e) => {
+  const sel = e.target.closest("[data-action]");
   if (!sel) return;
   try {
-    await api("PATCH", `/api/directors/${sel.dataset.id}`, { notify_replies: sel.value });
+    if (sel.dataset.action === "notify-replies") await api("PATCH", `/api/people/${sel.dataset.id}`, { notify_replies: sel.value });
+    if (sel.dataset.action === "notify-versions") await api("PATCH", `/api/people/${sel.dataset.id}`, { notify_versions: sel.checked });
   } catch (err) {
-    alert(err.message);
+    fail(err);
   }
 });
-
-document.getElementById("settings-form")?.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const status = document.getElementById("settings-status");
+people?.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-action=edit-person]");
+  if (!b) return;
+  const name = prompt(t("js.person_name"), b.dataset.name ?? "");
+  if (name === null) return;
+  const email = prompt(t("js.person_email", { name }), b.dataset.email ?? "");
+  if (email === null) return;
   try {
-    await api("PUT", "/api/settings", { comments_visibility: e.target.elements.visibility.value });
-    status.textContent = "Guardado.";
+    await api("PATCH", `/api/people/${b.dataset.id}`, { name, email: email.trim() });
+    location.reload();
   } catch (err) {
-    status.textContent = err.message;
+    fail(err);
   }
 });
 
 document.getElementById("sessions-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const directors = e.target.elements.directors.checked;
-  const who = directors ? "tus sesiones y las de todos los directores" : "todas tus sesiones del navegador";
-  if (!confirm(`¿Cerrar ${who}? Tendrás que entrar de nuevo con tu token.`)) return;
+  const reviewers = e.target.elements.reviewers.checked;
+  if (!confirm(t(reviewers ? "js.close_all_reviewers_confirm" : "js.close_all_confirm"))) return;
   try {
-    await api("POST", "/api/sessions/close-all", { directors });
-    location.href = "/entrar";
+    await api("POST", "/api/sessions/close-all", { reviewers });
+    location.href = "/login";
   } catch (err) {
-    alert(err.message);
+    fail(err);
   }
 });
+
+// --- a document's page ---
 
 document.getElementById("upload-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -117,19 +130,101 @@ document.getElementById("upload-form")?.addEventListener("submit", async (e) => 
   const max = Number(document.body.dataset.maxPdfMb) * 1024 * 1024;
   const pdf = f.elements.pdf.files[0];
   if (pdf && pdf.size > max) {
-    status.textContent = "El PDF es demasiado grande.";
+    status.textContent = t("js.pdf_too_large");
     return;
   }
   const data = new FormData();
   data.set("pdf", pdf);
-  data.set("avance", f.elements.avance.files[0]);
+  const progress = f.elements.progress.files[0];
+  if (progress) data.set("progress", progress);
   data.set("note", f.elements.note.value);
-  status.textContent = "Publicando…";
+  status.textContent = t("js.publishing");
   try {
-    const r = await api("POST", "/api/versions", data);
-    status.textContent = `Versión ${r.version.number} publicada.`;
-    location.href = `/v/${r.version.number}`;
+    const r = await api("POST", `${DOC_API}/versions`, data);
+    status.textContent = t("js.published", { n: r.version.number });
+    location.href = `/d/${encodeURIComponent(DOC)}/v/${r.version.number}`;
   } catch (err) {
     status.textContent = err.message;
+  }
+});
+
+const invite = document.getElementById("invite-form");
+const newPerson = invite?.querySelector(".new-person");
+const toggleNewPerson = () => {
+  if (newPerson) newPerson.hidden = Boolean(invite.elements.person_id?.value);
+};
+invite?.elements.person_id?.addEventListener("change", toggleNewPerson);
+toggleNewPerson();
+
+invite?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const wanted = f.elements.send_link.checked;
+  const existing = f.elements.person_id?.value;
+  try {
+    const r = await api("POST", `${DOC_API}/invitations`, {
+      ...(existing ? { person_id: Number(existing) } : { name: f.elements.name.value, email: f.elements.email.value }),
+      role: f.elements.role.value,
+      send_link: wanted,
+    });
+    showLink(r.invitation.person.name, r.link, wanted ? r.email : null);
+    f.reset();
+  } catch (err) {
+    fail(err);
+  }
+});
+
+document.querySelector("table.invitations")?.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-action]");
+  if (!b) return;
+  const { id, name } = b.dataset;
+  try {
+    if (b.dataset.action === "rotate") {
+      if (!confirm(t("js.rotate_confirm", { name }))) return;
+      const send = confirm(t("js.rotate_send"));
+      const r = await api("POST", `/api/invitations/${id}/rotate`, { send_link: send });
+      showLink(r.invitation.person.name, r.link, send ? r.email : null);
+    } else if (b.dataset.action === "revoke") {
+      if (!confirm(t("js.revoke_confirm", { name }))) return;
+      await api("POST", `/api/invitations/${id}/revoke`, {});
+      location.reload();
+    } else if (b.dataset.action === "role") {
+      const role = prompt(t("js.role_prompt", { name }), b.dataset.role ?? "");
+      if (role === null) return;
+      await api("PATCH", `/api/invitations/${id}`, { role });
+      location.reload();
+    }
+  } catch (err) {
+    fail(err);
+  }
+});
+
+document.getElementById("doc-settings-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const status = document.getElementById("settings-status");
+  try {
+    const r = await api("PATCH", DOC_API, {
+      title: f.elements.title.value,
+      slug: f.elements.slug.value.trim(),
+      language: f.elements.language.value,
+      visibility: f.elements.visibility.value,
+      default_role: f.elements.default_role.value,
+    });
+    if (r.document.slug !== DOC) location.href = `/d/${encodeURIComponent(r.document.slug)}/manage`;
+    else status.textContent = t("js.saved");
+  } catch (err) {
+    status.textContent = err.message;
+  }
+});
+
+document.getElementById("archive-button")?.addEventListener("click", async (e) => {
+  const archived = e.target.dataset.archived === "1";
+  if (!archived && !confirm(t("js.archive_confirm"))) return;
+  try {
+    await api("POST", `${DOC_API}/${archived ? "unarchive" : "archive"}`, {});
+    location.reload();
+  } catch (err) {
+    fail(err);
   }
 });

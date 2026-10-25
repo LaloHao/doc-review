@@ -1,8 +1,8 @@
 import { createServer, type Server } from "node:http";
-import { describeConfig, directorDigestHour, type Config } from "../config.js";
+import { describeConfig, reviewerDigestHour, type Config } from "../config.js";
 import { migrate, openDb, pendingMigrations, type Db } from "../db/db.js";
 import { Notifier, smtpMailer, telegramClient, type Mailer, type Telegram } from "../notify/notify.js";
-import { ownerSessionFingerprint, Repo } from "../repo.js";
+import { OWNER, ownerSessionFingerprint, Repo } from "../repo.js";
 import { openStore, type BlobStore } from "../storage.js";
 import { createApp } from "./app.js";
 
@@ -40,49 +40,58 @@ export function localDayHour(d: Date, timeZone: string): { day: string; hour: nu
 }
 
 /**
- * Sends the owner's daily digest once per local day, at or after DIGEST_HOUR.
- * The day is marked only once the digest went out (or there was nothing to
- * send): if every channel failed, the next check tries again.
+ * Sends the owner's daily digest of each document once per local day, at or
+ * after DIGEST_HOUR. A day is marked only once its digest went out (or there was
+ * nothing to send): if every channel failed, the next check tries again.
+ * Returns how many digests went out.
  */
-export async function runDigest(config: Config, repo: Repo, notifier: Notifier, now: Date): Promise<boolean> {
-  if (config.digestHour === null) return false;
+export async function runDigest(config: Config, repo: Repo, notifier: Notifier, now: Date): Promise<number> {
+  if (config.digestHour === null) return 0;
   const { day, hour } = localDayHour(now, config.timeZone);
-  if (hour < config.digestHour) return false;
-  if (await repo.digestDone(day)) return false;
+  if (hour < config.digestHour) return 0;
   const since = new Date(now.getTime() - 24 * 3600_000);
-  const threads = await repo.listThreads({ kind: "owner", directorId: null }, { since });
-  const r = await notifier.digest(threads, since);
-  if (r === "failed") return false;
-  await repo.markDigest(day);
-  return r === "sent";
+  let sent = 0;
+  for (const doc of await repo.listDocuments()) {
+    if (await repo.digestDone(doc.id, day)) continue;
+    const threads = await repo.listThreads(doc, OWNER, { since });
+    const r = await notifier.digest(doc, threads, since);
+    if (r === "failed") continue;
+    await repo.markDigest(doc.id, day);
+    if (r === "sent") sent++;
+  }
+  return sent;
 }
 
 /**
- * Daily digests for the directors who chose them: replies since their last
- * digest (at most a week back), once per local day. Returns how many went out.
+ * Daily digests for the reviewers who chose them: replies since their last
+ * digest (at most a week back), once per local day and invitation (each in its
+ * document's language). Returns how many went out.
  */
-export async function runDirectorDigests(
+export async function runReviewerDigests(
   config: Config,
   repo: Repo,
   notifier: Notifier,
   now: Date,
   log: (m: string) => void = () => undefined,
 ): Promise<number> {
-  if (!notifier.enabled.directorEmail) return 0;
+  if (!notifier.enabled.reviewerEmail) return 0;
   const { day, hour } = localDayHour(now, config.timeZone);
-  if (hour < directorDigestHour(config)) return 0;
+  if (hour < reviewerDigestHour(config)) return 0;
   let sent = 0;
-  for (const d of await repo.listDirectors()) {
-    if (d.notify_replies !== "daily" || !d.email || d.revoked_at) continue;
-    if (await repo.directorDigestDone(d.id, day)) continue;
-    const last = await repo.lastDirectorDigest(d.id);
-    const since = new Date(Math.max(last?.getTime() ?? 0, now.getTime() - 24 * 3600_000 * (last ? 7 : 1)));
-    const items = await repo.directorUpdates(d.id, since);
-    try {
-      if (await notifier.directorDigest(d, items)) sent++;
-      await repo.markDirectorDigest(d.id, day);
-    } catch (e) {
-      log(`director digest failed for director #${d.id}: ${(e as Error).message}`);
+  for (const doc of await repo.listDocuments()) {
+    for (const inv of await repo.invitationsOfDocument(doc.id)) {
+      const p = inv.person;
+      if (inv.revoked_at || p.notify_replies !== "daily" || !p.email) continue;
+      if (await repo.reviewerDigestDone(inv.id, day)) continue;
+      const last = await repo.lastReviewerDigest(inv.id);
+      const since = new Date(Math.max(last?.getTime() ?? 0, now.getTime() - 24 * 3600_000 * (last ? 7 : 1)));
+      const items = await repo.reviewerUpdates(doc, p.id, since);
+      try {
+        if (await notifier.reviewerDigest(doc, p, items)) sent++;
+        await repo.markReviewerDigest(inv.id, day);
+      } catch (e) {
+        log(`reviewer digest failed for invitation #${inv.id}: ${(e as Error).message}`);
+      }
     }
   }
   return sent;
@@ -124,7 +133,6 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
   const mailer = opts.mailer !== undefined ? opts.mailer : config.smtp ? await smtpMailer(config.smtp) : null;
   const notifier = new Notifier({
     publicUrl: config.publicUrl,
-    thesisTitle: async () => (await repo.latestVersion())?.title ?? "la tesis",
     telegram,
     mailer,
     ownerEmail: config.ownerEmail,
@@ -150,9 +158,10 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
     ticking = true;
     try {
       await repo.purgeExpiredSessions();
-      if (await runDigest(config, repo, notifier, now())) log("daily digest sent");
-      const n = await runDirectorDigests(config, repo, notifier, now(), log);
-      if (n) log(`director digests sent: ${n}`);
+      const d = await runDigest(config, repo, notifier, now());
+      if (d) log(`daily digests sent: ${d}`);
+      const n = await runReviewerDigests(config, repo, notifier, now(), log);
+      if (n) log(`reviewer digests sent: ${n}`);
     } catch (e) {
       log(`digest error: ${(e as Error).message}`);
     } finally {

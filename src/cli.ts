@@ -1,34 +1,132 @@
 #!/usr/bin/env node
-// doc-review: server and owner CLI.
+// doc-review: the server and the owner's command line.
 
-import { writeFile } from "node:fs/promises";
-import { parseArgs } from "node:util";
-import { progressFromOrg } from "./progress.js";
-import { Client, loadClientConfig } from "./client.js";
+import { execFile } from "node:child_process";
+import { access, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { parseArgs, promisify } from "node:util";
+import { Client, findProjectConfig, loadClientConfig, type ProjectConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
-import { newOwnerToken, sha256Hex } from "./server/crypto.js";
 import { fmtThread, oneLine } from "./format.js";
+import { progressFromOrg } from "./progress.js";
+import { newOwnerToken, sha256Hex } from "./server/crypto.js";
 import { startServer } from "./server/main.js";
 
-const HELP = `doc-review — comentarios de los directores sobre el PDF de la tesis
+const HELP = `doc-review — reviewers comment on PDF versions of your documents
 
-Servidor:
-  doc-review serve                 inicia el servidor (configuración por variables de entorno)
-  doc-review migrate               aplica las migraciones (DATABASE_ADMIN_URL o DATABASE_URL)
-  doc-review gen-token             genera un token de autor y su SHA-256 (OWNER_TOKEN_SHA256)
+Server:
+  doc-review serve                     start the server (configured by environment variables)
+  doc-review migrate                   apply database migrations (DATABASE_ADMIN_URL or DATABASE_URL)
+  doc-review gen-token                 generate an owner token and its SHA-256 (OWNER_TOKEN_SHA256)
 
-Autor (usa ~/.config/doc-review/config.json: {"url", "token"}, modo 0600):
-  doc-review publish tesis.pdf avance.json [-m "nota"]
-  doc-review comments [--version N|latest] [--all] [--json]
-  doc-review avance tesis.org [-o avance.json]   genera avance.json desde los #+INCLUDE
-  doc-review directors list
-  doc-review directors add "Nombre" [--role R] [--email E] [--notify] [--replies instant|daily|never] [--send-link]
-  doc-review directors replies ID instant|daily|never   avisos de respuestas por correo
-  doc-review directors rotate ID [--send-link]
-  doc-review directors revoke ID
-  doc-review sessions close-all [--directors]    cierra tus sesiones web (y las de los directores)
+Owner commands use ~/.config/doc-review/config.json ({"url", "token"}, mode 0600).
+DOC is -d SLUG, else DOC_REVIEW_DOCUMENT, else "document" in .doc-review.json
+(found from the current directory upward). --url URL picks another server
+(its token must be in config.json under "servers").
+
+Documents:
+  doc-review documents list
+  doc-review documents create SLUG "Title" [--language en|es] [--visibility all|own] [--default-role ROLE]
+  doc-review documents rename SLUG "New title" [--slug NEW-SLUG]
+  doc-review documents set SLUG [--language en|es] [--visibility all|own] [--default-role ROLE]
+  doc-review documents archive SLUG | unarchive SLUG
+
+Versions and comments:
+  doc-review publish [FILE.pdf] [PROGRESS.json] [-m NOTE] [-d DOC]
+                                       without files: "pdf" and "progress" of .doc-review.json
+  doc-review comments [-d DOC] [--version N|latest] [--all] [--json]
+  doc-review progress ROOT.org [-o progress.json]   progress.json from the #+INCLUDE files
+
+Reviewers:
+  doc-review people list
+  doc-review people add "Name" [--email E] [--replies instant|daily|never] [--versions]
+  doc-review people set ID [--name N] [--email E] [--replies instant|daily|never] [--versions | --no-versions]
+  doc-review invite [-d DOC] (--person ID | "Name" [--email E]) [--role ROLE] [--send-link]
+  doc-review invitations list [-d DOC]
+  doc-review invitations role ID "Role"
+  doc-review invitations rotate ID [--send-link]     new link; the old one and its sessions stop working
+  doc-review invitations revoke ID
+  doc-review sessions close-all [--reviewers]        end your web sessions (and the reviewers')
 `;
+
+const run = promisify(execFile);
+
+type Values = Record<string, string | boolean | undefined>;
+
+function args(rest: string[], options: Record<string, { type: "string" | "boolean"; short?: string }>) {
+  const r = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { url: { type: "string" }, doc: { type: "string", short: "d" }, ...options },
+  });
+  return { values: r.values as Values, positionals: r.positionals };
+}
+
+async function project(): Promise<ProjectConfig | null> {
+  return findProjectConfig(process.cwd());
+}
+
+async function client(values: Values, proj?: ProjectConfig | null): Promise<Client> {
+  const url = (values.url as string | undefined) ?? proj?.url;
+  return new Client(await loadClientConfig(undefined, url));
+}
+
+function docOf(values: Values, proj: ProjectConfig | null): string {
+  const d = (values.doc as string | undefined) ?? process.env.DOC_REVIEW_DOCUMENT ?? proj?.document;
+  if (!d) throw new Error("which document? use -d SLUG (or DOC_REVIEW_DOCUMENT, or \"document\" in .doc-review.json)");
+  return d;
+}
+
+const exists = async (p: string) =>
+  access(p).then(
+    () => true,
+    () => false,
+  );
+
+/** progress of .doc-review.json: a file, a command printing JSON, or {command, file}. */
+async function projectProgress(proj: ProjectConfig): Promise<{ path: string } | { json: string } | null> {
+  const p = proj.progress;
+  if (!p) return null;
+  const at = (f: string) => (isAbsolute(f) ? f : join(proj.root, f));
+  const sh = (cmd: string) => run("/bin/sh", ["-c", cmd], { cwd: proj.root, maxBuffer: 4 * 1024 * 1024 });
+  if (typeof p === "string") {
+    if (await exists(at(p))) return { path: at(p) };
+    return { json: (await sh(p)).stdout };
+  }
+  if (p.command) await sh(p.command);
+  return p.file ? { path: at(p.file) } : null;
+}
+
+const line = (...xs: unknown[]) => xs.map((x) => oneLine(String(x ?? ""))).join("\t");
+
+interface Doc {
+  slug: string;
+  title: string;
+  language: string;
+  visibility: string;
+  archived: boolean;
+  role?: string;
+  latest_version?: { number: number } | null;
+  open_threads?: number;
+  reviewers?: number;
+}
+interface Person {
+  id: number;
+  name: string;
+  email: string | null;
+  notify_replies: string;
+  notify_versions: boolean;
+  invitations?: { id: number; document: string; role: string; active: boolean }[];
+}
+interface Inv {
+  id: number;
+  role: string;
+  active: boolean;
+  person: Person;
+  last_seen_at: string | null;
+}
+type LinkReply = { invitation: Inv; link: string; email: { sent: boolean; error?: string } };
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -56,121 +154,225 @@ async function main(argv: string[]): Promise<number> {
       const db = await openDb(c.databaseAdminUrl);
       const applied = await migrate(db);
       await db.close();
-      console.log(applied.length ? `aplicadas: ${applied.join(", ")}` : "sin migraciones pendientes");
+      console.log(applied.length ? `applied: ${applied.join(", ")}` : "no pending migrations");
       return 0;
     }
 
     case "gen-token": {
       const token = newOwnerToken();
-      console.log(`token (en ~/.config/doc-review/config.json):\n  ${token}`);
-      console.log(`OWNER_TOKEN_SHA256 (en el Secret del servidor):\n  ${sha256Hex(token)}`);
-      return 0;
-    }
-
-    case "publish": {
-      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { message: { type: "string", short: "m" } } });
-      const [pdf, progress] = positionals;
-      if (!pdf) throw new Error("uso: doc-review publish documento.pdf [progress.json] [-m nota]");
-      const client = new Client(await loadClientConfig());
-      const r = await client.publish(pdf, progress ?? null, values.message ?? "");
-      console.log(`publicada la versión ${r.version.number} (${r.version.page_count} páginas): ${r.url}`);
-      return 0;
-    }
-
-    case "comments": {
-      const { values } = parseArgs({
-        args: rest,
-        options: { version: { type: "string" }, all: { type: "boolean" }, json: { type: "boolean" } },
-      });
-      const client = new Client(await loadClientConfig());
-      const { threads } = await client.threads({ version: values.version, status: values.all ? "all" : "open" });
-      if (values.json) console.log(JSON.stringify(threads, null, 2));
-      else if (threads.length === 0) console.log("sin comentarios abiertos");
-      else console.log(threads.map(fmtThread).join("\n\n"));
+      console.log(`token (for ~/.config/doc-review/config.json):\n  ${token}`);
+      console.log(`OWNER_TOKEN_SHA256 (for the server's Secret):\n  ${sha256Hex(token)}`);
       return 0;
     }
 
     case "progress": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { output: { type: "string", short: "o" } } });
-      const root = positionals[0] ?? "tesis.org";
-      const a = await progressFromOrg(root);
-      const out = JSON.stringify(a, null, 2) + "\n";
+      const root = positionals[0];
+      if (!root) throw new Error("usage: doc-review progress ROOT.org [-o progress.json]");
+      const out = JSON.stringify(await progressFromOrg(root), null, 2) + "\n";
       if (values.output) await writeFile(values.output, out);
       else process.stdout.write(out);
       return 0;
     }
 
-    case "directors": {
-      const [sub, ...args] = rest;
-      const client = new Client(await loadClientConfig());
-      type D = { id: number; name: string; role: string; email: string | null; active: boolean; notify_replies: string };
-      if (sub === "list" || sub === undefined) {
-        const { directors } = await client.request<{ directors: D[] }>("GET", "/api/directors");
-        for (const d of directors) console.log([d.id, d.active ? "activo" : "revocado", d.name, d.role, d.email ?? "", `respuestas: ${d.notify_replies}`].map((x) => oneLine(String(x))).join("\t"));
+    case "documents": {
+      const [sub = "list", ...more] = rest;
+      const { values, positionals } = args(more, {
+        language: { type: "string" },
+        visibility: { type: "string" },
+        "default-role": { type: "string" },
+        slug: { type: "string" },
+      });
+      const c = await client(values, await project());
+      const settings = () => ({
+        ...(values.language !== undefined ? { language: values.language } : {}),
+        ...(values.visibility !== undefined ? { visibility: values.visibility } : {}),
+        ...(values["default-role"] !== undefined ? { default_role: values["default-role"] } : {}),
+      });
+      const show = (d: Doc) => console.log(`${d.slug}: ${oneLine(d.title)} (${d.language}, visibility ${d.visibility}${d.archived ? ", archived" : ""})`);
+      const slugArg = (usage: string) => {
+        const s = positionals[0];
+        if (!s) throw new Error(`usage: doc-review documents ${usage}`);
+        return encodeURIComponent(s);
+      };
+      switch (sub) {
+        case "list": {
+          const { documents } = await c.request<{ documents: Doc[] }>("GET", "/api/documents");
+          console.log(line("SLUG", "TITLE", "LATEST", "OPEN", "REVIEWERS", "STATE"));
+          for (const d of documents) {
+            console.log(line(d.slug, d.title, d.latest_version ? `v${d.latest_version.number}` : "-", d.open_threads ?? "", d.reviewers ?? "", d.archived ? "archived" : "active"));
+          }
+          return 0;
+        }
+        case "create": {
+          const [s, title] = positionals;
+          if (!s || !title) throw new Error('usage: doc-review documents create SLUG "Title" [--language en|es] [--visibility all|own] [--default-role ROLE]');
+          const r = await c.json<{ document: Doc & { url: string } }>("POST", "/api/documents", { slug: s, title, ...settings() });
+          show(r.document);
+          console.log(r.document.url);
+          return 0;
+        }
+        case "rename": {
+          const s = slugArg('rename SLUG "New title" [--slug NEW-SLUG]');
+          const title = positionals[1];
+          if (!title && values.slug === undefined) throw new Error('usage: doc-review documents rename SLUG "New title" [--slug NEW-SLUG]');
+          const r = await c.json<{ document: Doc }>("PATCH", `/api/documents/${s}`, {
+            ...(title ? { title } : {}),
+            ...(values.slug !== undefined ? { slug: values.slug } : {}),
+          });
+          show(r.document);
+          return 0;
+        }
+        case "set": {
+          const s = slugArg("set SLUG [--language en|es] [--visibility all|own] [--default-role ROLE]");
+          show((await c.json<{ document: Doc }>("PATCH", `/api/documents/${s}`, settings())).document);
+          return 0;
+        }
+        case "archive":
+        case "unarchive": {
+          const s = slugArg(`${sub} SLUG`);
+          show((await c.json<{ document: Doc }>("POST", `/api/documents/${s}/${sub}`, {})).document);
+          return 0;
+        }
+      }
+      throw new Error(`unknown command: documents ${sub}`);
+    }
+
+    case "publish": {
+      const { values, positionals } = args(rest, { message: { type: "string", short: "m" } });
+      const proj = await project();
+      const doc = docOf(values, proj);
+      let [pdf, progressFile] = positionals;
+      let progress: { path: string } | { json: string } | null = progressFile ? { path: progressFile } : null;
+      if (!pdf) {
+        if (!proj?.pdf) throw new Error("usage: doc-review publish FILE.pdf [PROGRESS.json] [-m NOTE] [-d DOC] (or \"pdf\" in .doc-review.json)");
+        pdf = isAbsolute(proj.pdf) ? proj.pdf : join(proj.root, proj.pdf);
+        progress = await projectProgress(proj);
+      }
+      const c = await client(values, proj);
+      const r = await c.publish(doc, pdf, progress, (values.message as string | undefined) ?? "");
+      console.log(`published version ${r.version.number} (${r.version.page_count} pages): ${r.url}`);
+      return 0;
+    }
+
+    case "comments": {
+      const { values } = args(rest, { version: { type: "string" }, all: { type: "boolean" }, json: { type: "boolean" } });
+      const proj = await project();
+      const c = await client(values, proj);
+      const { threads } = await c.threads(docOf(values, proj), { version: values.version as string | undefined, status: values.all ? "all" : "open" });
+      if (values.json) console.log(JSON.stringify(threads, null, 2));
+      else if (threads.length === 0) console.log(values.all ? "no comments" : "no open comments");
+      else console.log(threads.map(fmtThread).join("\n\n"));
+      return 0;
+    }
+
+    case "people": {
+      const [sub = "list", ...more] = rest;
+      const { values, positionals } = args(more, {
+        name: { type: "string" },
+        email: { type: "string" },
+        replies: { type: "string" },
+        versions: { type: "boolean" },
+        "no-versions": { type: "boolean" },
+      });
+      const c = await client(values, await project());
+      const show = (p: Person) => console.log(`person ${p.id}: ${oneLine(p.name)}${p.email ? ` <${oneLine(p.email)}>` : ""} (replies: ${p.notify_replies}, versions: ${p.notify_versions ? "yes" : "no"})`);
+      if (sub === "list") {
+        const { people } = await c.request<{ people: Person[] }>("GET", "/api/people");
+        console.log(line("ID", "NAME", "EMAIL", "REPLIES", "VERSIONS", "DOCUMENTS"));
+        for (const p of people) {
+          const docs = (p.invitations ?? []).map((i) => `${i.document}${i.role ? `:${i.role}` : ""}${i.active ? "" : "(revoked)"}`).join(", ");
+          console.log(line(p.id, p.name, p.email ?? "", p.notify_replies, p.notify_versions ? "yes" : "no", docs));
+        }
         return 0;
       }
-      const { values, positionals } = parseArgs({
-        args,
-        allowPositionals: true,
-        options: {
-          role: { type: "string" },
-          email: { type: "string" },
-          notify: { type: "boolean" },
-          replies: { type: "string" },
-          "send-link": { type: "boolean" },
-        },
-      });
+      const prefs = {
+        ...(values.email !== undefined ? { email: values.email } : {}),
+        ...(values.replies !== undefined ? { notify_replies: values.replies } : {}),
+        ...(values.versions ? { notify_versions: true } : values["no-versions"] ? { notify_versions: false } : {}),
+      };
       if (sub === "add") {
         const name = positionals[0];
-        if (!name) throw new Error('uso: doc-review directors add "Nombre" [--role R] [--email E]');
-        const r = await client.json<{ director: D; link: string; email: { sent: boolean; error?: string } }>("POST", "/api/directors", {
-          name,
-          role: values.role ?? "",
-          email: values.email ?? "",
-          notify_versions: values.notify === true,
-          notify_replies: values.replies ?? "never",
-          send_link: values["send-link"] === true,
-        });
-        console.log(`director ${r.director.id}: ${r.director.name}\nenlace (se muestra una sola vez): ${r.link}`);
-        if (values["send-link"]) console.log(r.email.sent ? "enlace enviado por correo" : `no se envió el correo: ${r.email.error}`);
+        if (!name) throw new Error('usage: doc-review people add "Name" [--email E] [--replies instant|daily|never] [--versions]');
+        show((await c.json<{ person: Person }>("POST", "/api/people", { name, ...prefs })).person);
+        return 0;
+      }
+      if (sub === "set") {
+        const id = Number(positionals[0]);
+        if (!Number.isInteger(id)) throw new Error("usage: doc-review people set ID [--name N] [--email E] [--replies R] [--versions | --no-versions]");
+        show((await c.json<{ person: Person }>("PATCH", `/api/people/${id}`, { ...(values.name !== undefined ? { name: values.name } : {}), ...prefs })).person);
+        return 0;
+      }
+      throw new Error(`unknown command: people ${sub}`);
+    }
+
+    case "invite": {
+      const { values, positionals } = args(rest, {
+        person: { type: "string" },
+        email: { type: "string" },
+        role: { type: "string" },
+        "send-link": { type: "boolean" },
+      });
+      const proj = await project();
+      const doc = docOf(values, proj);
+      if (!values.person && !positionals[0]) throw new Error('usage: doc-review invite [-d DOC] (--person ID | "Name" [--email E]) [--role ROLE] [--send-link]');
+      const c = await client(values, proj);
+      const r = await c.json<LinkReply>("POST", `/api/documents/${encodeURIComponent(doc)}/invitations`, {
+        ...(values.person ? { person_id: Number(values.person) } : { name: positionals[0], email: values.email ?? "" }),
+        ...(values.role !== undefined ? { role: values.role } : {}),
+        send_link: values["send-link"] === true,
+      });
+      console.log(`invitation ${r.invitation.id}: ${oneLine(r.invitation.person.name)} (person ${r.invitation.person.id})${r.invitation.role ? `, ${oneLine(r.invitation.role)}` : ""}, document ${doc}`);
+      console.log(`link (shown only once): ${r.link}`);
+      if (values["send-link"]) console.log(r.email.sent ? "link sent by email" : `the email was not sent: ${oneLine(r.email.error)}`);
+      return 0;
+    }
+
+    case "invitations": {
+      const [sub = "list", ...more] = rest;
+      const { values, positionals } = args(more, { "send-link": { type: "boolean" } });
+      const proj = await project();
+      const c = await client(values, proj);
+      if (sub === "list") {
+        const doc = docOf(values, proj);
+        const { invitations } = await c.request<{ invitations: Inv[] }>("GET", `/api/documents/${encodeURIComponent(doc)}/invitations`);
+        console.log(line("ID", "PERSON", "ROLE", "STATE", "LAST VISIT"));
+        for (const i of invitations) console.log(line(i.id, `${i.person.name} (${i.person.id})`, i.role, i.active ? "active" : "revoked", i.last_seen_at ?? "never"));
         return 0;
       }
       const id = Number(positionals[0]);
-      if (!Number.isInteger(id)) throw new Error(`uso: doc-review directors ${sub} ID`);
-      if (sub === "rotate") {
-        const r = await client.json<{ director: D; link: string; email: { sent: boolean; error?: string } }>("POST", `/api/directors/${id}/rotate`, {
-          send_link: values["send-link"] === true,
-        });
-        console.log(`enlace nuevo de ${r.director.name} (el anterior ya no funciona): ${r.link}`);
-        if (values["send-link"]) console.log(r.email.sent ? "enlace enviado por correo" : `no se envió el correo: ${r.email.error}`);
+      if (!Number.isInteger(id)) throw new Error(`usage: doc-review invitations ${sub} ID`);
+      if (sub === "role") {
+        if (positionals[1] === undefined) throw new Error('usage: doc-review invitations role ID "Role"');
+        const r = await c.json<{ invitation: Inv }>("PATCH", `/api/invitations/${id}`, { role: positionals[1] });
+        console.log(`invitation ${id}: role ${oneLine(r.invitation.role) || "(none)"}`);
         return 0;
       }
-      if (sub === "replies") {
-        const r = await client.json<{ director: D }>("PATCH", `/api/directors/${id}`, { notify_replies: positionals[1] });
-        console.log(`avisos de respuestas de ${oneLine(r.director.name)}: ${r.director.notify_replies}`);
+      if (sub === "rotate") {
+        const r = await c.json<LinkReply>("POST", `/api/invitations/${id}/rotate`, { send_link: values["send-link"] === true });
+        console.log(`new link for ${oneLine(r.invitation.person.name)} (the old one no longer works): ${r.link}`);
+        if (values["send-link"]) console.log(r.email.sent ? "link sent by email" : `the email was not sent: ${oneLine(r.email.error)}`);
         return 0;
       }
       if (sub === "revoke") {
-        const r = await client.json<{ director: D }>("POST", `/api/directors/${id}/revoke`, {});
-        console.log(`revocado: ${r.director.name}`);
+        const r = await c.json<{ invitation: Inv }>("POST", `/api/invitations/${id}/revoke`, {});
+        console.log(`revoked: invitation ${id} of ${oneLine(r.invitation.person.name)}`);
         return 0;
       }
-      throw new Error(`subcomando desconocido: directors ${sub}`);
+      throw new Error(`unknown command: invitations ${sub}`);
     }
 
     case "sessions": {
-      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { directors: { type: "boolean" } } });
-      if (positionals[0] !== "close-all") throw new Error("uso: doc-review sessions close-all [--directors]");
-      const client = new Client(await loadClientConfig());
-      const r = await client.json<{ closed: { owner: number; directors: number } }>("POST", "/api/sessions/close-all", {
-        directors: values.directors === true,
-      });
-      console.log(`sesiones cerradas: ${r.closed.owner} tuyas, ${r.closed.directors} de directores`);
+      const { values, positionals } = args(rest, { reviewers: { type: "boolean" } });
+      if (positionals[0] !== "close-all") throw new Error("usage: doc-review sessions close-all [--reviewers]");
+      const c = await client(values, await project());
+      const r = await c.json<{ closed: { owner: number; reviewers: number } }>("POST", "/api/sessions/close-all", { reviewers: values.reviewers === true });
+      console.log(`sessions closed: ${r.closed.owner} of yours, ${r.closed.reviewers} of reviewers`);
       return 0;
     }
 
     default:
-      process.stderr.write(`comando desconocido: ${cmd}\n\n${HELP}`);
+      process.stderr.write(`unknown command: ${cmd}\n\n${HELP}`);
       return 2;
   }
 }

@@ -1,13 +1,15 @@
-// Versions: publishing (owner), the viewer and changes pages, the PDF, the diff.
+// Versions of a document: publishing (owner), the viewer and changes pages,
+// the PDF and the diff.
 
 import { locateSections } from "../../diff.js";
-import { validateProgress, ValidationError, type Progress } from "../../progress.js";
 import { extractPdf, PdfError } from "../../pdf/extract.js";
-import type { Version } from "../../repo.js";
+import { validateProgress, ValidationError, type Progress } from "../../progress.js";
+import type { Document, Version } from "../../repo.js";
 import type { App, Ctx } from "../context.js";
+import { docTr } from "../context.js";
 import { sha256Hex } from "../crypto.js";
 import { html, HttpError, json, readMultipart, redirect, send } from "../http.js";
-import * as pages from "../pages.js";
+import { changesPage, viewerPage } from "../pages/viewer.js";
 import type { Router } from "../router.js";
 import { str, toInt } from "../validate.js";
 
@@ -26,58 +28,55 @@ export const versionJson = (v: Version) => ({
 export function versionRoutes(r: Router<Ctx>, app: App): void {
   const { repo, config, store, notifier, log } = app;
 
-  const getVersionOr404 = async (n: number): Promise<Version> => {
-    const v = await repo.getVersion(n);
-    if (!v) throw new HttpError(404, "No existe esa versión.");
+  const versionOr404 = async (doc: Document, n: string | undefined): Promise<Version> => {
+    const v = n === "latest" ? await repo.latestVersion(doc.id) : await repo.getVersion(doc.id, toInt(n, "field.version"));
+    if (!v) throw new HttpError(404, "err.no_version");
     return v;
   };
 
-  r.get("/v/latest", async (c) => {
-    app.requireAny(c);
-    const v = await repo.latestVersion();
-    if (!v) throw new HttpError(404, "Aún no hay versiones.");
-    redirect(c.res, `/v/${v.number}`);
+  r.get("/d/:slug/v/:n", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    const v = await versionOr404(doc, c.params[1]);
+    if (c.params[1] === "latest") return redirect(c.res, `/d/${doc.slug}/v/${v.number}`);
+    const tr = docTr(doc);
+    html(c.res, 200, viewerPage(app.layout(c, tr, tr("viewer.title", { title: doc.title, n: v.number }), { doc }), doc, v, await repo.listVersions(doc.id)));
   });
 
-  r.get("/v/:n", async (c) => {
-    app.requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
-    html(c.res, 200, pages.viewerPage(app.layout(c, `Tesis · versión ${v.number}`), v, await repo.listVersions()));
+  r.get("/d/:slug/v/:n/changes", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    const v = await versionOr404(doc, c.params[1]);
+    const tr = docTr(doc);
+    html(c.res, 200, changesPage(app.layout(c, tr, tr("changes.title", { n: v.number }), { doc }), doc, v, await repo.previousVersion(v), await app.diffFor(v)));
   });
 
-  r.get("/v/:n/cambios", async (c) => {
-    app.requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
-    const all = await repo.listVersions();
-    const prev = all.find((x) => x.number < v.number) ?? null;
-    html(c.res, 200, pages.changesPage(app.layout(c, `Versión ${v.number}: cambios`), v, prev, await app.diffFor(v)));
+  r.get("/api/documents/:slug/versions", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    json(c.res, 200, { versions: (await repo.listVersions(doc.id)).map(versionJson) });
   });
 
-  r.get("/api/versions", async (c) => {
-    app.requireAny(c);
-    json(c.res, 200, { versions: (await repo.listVersions()).map(versionJson) });
-  });
-
-  r.post("/api/versions", async (c) => {
+  r.post("/api/documents/:slug/versions", async (c) => {
     app.requireOwner(c);
     app.checkCsrf(c);
+    const { doc } = await app.documentFor(c, c.params[0]);
+    app.requireWritable(doc);
     const form = await readMultipart(c.req, config.maxPdfBytes + 2 * 1024 * 1024);
     const pdf = form.get("pdf");
     // progress.json is optional; "avance" is the thesis template's field name.
     const progressRaw = form.get("progress") ?? form.get("avance");
     const progressFile = progressRaw instanceof Blob && progressRaw.size > 0 ? progressRaw : null;
-    if (!(pdf instanceof Blob)) throw new HttpError(400, "Falta el PDF (campo pdf).");
-    if (pdf.size > config.maxPdfBytes) throw new HttpError(413, `El PDF supera ${Math.round(config.maxPdfBytes / 1048576)} MB.`);
-    if (progressFile && progressFile.size > 1024 * 1024) throw new HttpError(413, "progress.json supera 1 MB.");
+    if (!(pdf instanceof Blob)) throw new HttpError(400, "err.pdf_missing");
+    const mb = Math.round(config.maxPdfBytes / 1048576);
+    if (pdf.size > config.maxPdfBytes) throw new HttpError(413, "err.pdf_too_large", { mb });
+    if (progressFile && progressFile.size > 1024 * 1024) throw new HttpError(413, "err.progress_too_large");
     const noteRaw = form.get("note");
-    const note = str(typeof noteRaw === "string" ? noteRaw : "", "La nota", 5000);
+    const note = str(typeof noteRaw === "string" ? noteRaw : "", "field.note", 5000);
     let progress: Progress | null = null;
     if (progressFile) {
       try {
         progress = validateProgress(JSON.parse(await progressFile.text()));
       } catch (e) {
-        if (e instanceof ValidationError) throw new HttpError(400, e.message);
-        throw new HttpError(400, "progress.json no es JSON válido.");
+        if (e instanceof ValidationError) throw new HttpError(400, "err.progress_invalid", { detail: e.message });
+        throw new HttpError(400, "err.progress_not_json");
       }
     }
     const data = new Uint8Array(await pdf.arrayBuffer());
@@ -85,57 +84,53 @@ export function versionRoutes(r: Router<Ctx>, app: App): void {
     try {
       extracted = await extractPdf(data);
     } catch (e) {
-      if (e instanceof PdfError) throw new HttpError(400, e.message);
+      if (e instanceof PdfError) throw new HttpError(400, e.key, e.params);
       throw e;
     }
     const sha = sha256Hex(data);
-    const sectionPages = locateSections(extracted.pages, progress);
     const key = `pdf/${sha}.pdf`;
     await store.put(key, data, "application/pdf");
-    const v = await repo.createVersion({
-      title: progress?.title ?? "",
+    const v = await repo.createVersion(doc, {
+      title: progress?.title ?? doc.title,
       note,
-      pdfKey: () => key,
+      pdfKey: key,
       pdfSha256: sha,
       pdfSize: data.length,
       pages: extracted.pages,
       progress,
-      sectionPages,
+      sectionPages: locateSections(extracted.pages, progress),
     });
-    log(`version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`);
+    log(`document #${doc.id} version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`);
     app.later(async () => {
       await app.diffFor(v);
     });
-    app.later(async () => notifier.versionPublished(v, await repo.listDirectors()));
-    json(c.res, 201, { version: versionJson(v), url: `${config.publicUrl}/v/${v.number}` });
+    app.later(async () => {
+      const recipients = (await repo.invitationsOfDocument(doc.id)).filter((i) => !i.revoked_at).map((i) => i.person);
+      await notifier.versionPublished(doc, v, recipients);
+    });
+    json(c.res, 201, { version: versionJson(v), url: `${config.publicUrl}/d/${doc.slug}/v/${v.number}` });
   });
 
-  r.get("/api/versions/latest", async (c) => {
-    app.requireAny(c);
-    const v = await repo.latestVersion();
-    if (!v) throw new HttpError(404, "Aún no hay versiones.");
-    json(c.res, 200, { version: versionJson(v) });
+  r.get("/api/documents/:slug/versions/:n", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    json(c.res, 200, { version: versionJson(await versionOr404(doc, c.params[1])) });
   });
 
-  r.get("/api/versions/:n", async (c) => {
-    app.requireAny(c);
-    json(c.res, 200, { version: versionJson(await getVersionOr404(toInt(c.params[0], "La versión"))) });
+  r.get("/api/documents/:slug/versions/:n/diff", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    json(c.res, 200, { diff: await app.diffFor(await versionOr404(doc, c.params[1])) });
   });
 
-  r.get("/api/versions/:n/diff", async (c) => {
-    app.requireAny(c);
-    json(c.res, 200, { diff: await app.diffFor(await getVersionOr404(toInt(c.params[0], "La versión"))) });
-  });
-
-  r.get("/api/versions/:n/pdf", async (c) => {
-    app.requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
+  r.get("/api/documents/:slug/versions/:n/pdf", async (c) => {
+    const { doc } = await app.documentFor(c, c.params[0]);
+    const v = await versionOr404(doc, c.params[1]);
     const data = await store.get(v.pdf_key);
-    if (!data) throw new HttpError(404, "El PDF de esta versión no está en el almacenamiento.");
+    if (!data) throw new HttpError(404, "err.pdf_not_stored");
     send(c.res, 200, data, "application/pdf", {
       "cache-control": "private, max-age=3600",
-      "content-disposition": `inline; filename="tesis-v${v.number}.pdf"`,
+      "content-disposition": `inline; filename="${doc.slug}-v${v.number}.pdf"`,
       etag: `"${v.pdf_sha256}"`,
     });
   });
+
 }
