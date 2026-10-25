@@ -84,7 +84,7 @@ export function threadUrl(publicUrl: string, t: { version: number; id: number })
 function commentText(t: ThreadOut, commentId: number, publicUrl: string): { title: string; body: string } {
   const c = t.comments.find((x) => x.id === commentId) ?? t.comments[t.comments.length - 1]!;
   const isReply = t.comments[0]?.id !== c.id;
-  const where = [`versión ${t.version}`, `página ${t.page}`, t.chapter ? name(t.chapter.title) : null].filter(Boolean).join(", ");
+  const where = [`versión ${t.version}`, `página ${t.page}`, t.section ? name(t.section.title) : null].filter(Boolean).join(", ");
   const title = `${isReply ? "Respuesta" : "Comentario nuevo"} de ${name(c.author.name)}`;
   const lines = [
     `${title} (${where})`,
@@ -143,7 +143,7 @@ export class Notifier {
     if (!this.d.instant) return;
     const c = thread.comments.find((x) => x.id === commentId);
     if (!c || c.author.kind === "owner") return;
-    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.chapter ? name(thread.chapter.title) : null].filter(Boolean).join(", ");
+    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.section ? name(thread.section.title) : null].filter(Boolean).join(", ");
     const title = `${name(c.author.name)} editó un comentario`;
     const text = [
       `${title} (${where})`,
@@ -172,7 +172,7 @@ export class Notifier {
     if (items.length === 0) return "empty";
     const lines = [`Resumen diario: ${items.length} comentario(s) nuevo(s) de tus directores.`, ""];
     for (const { t, c } of items.slice(0, 50)) {
-      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.chapter ? `, ${name(t.chapter.title)}` : ""}`);
+      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.section ? `, ${name(t.section.title)}` : ""}`);
       lines.push(`  ${excerpt(c.body ?? "", 200)}`);
       lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
     }
@@ -184,7 +184,7 @@ export class Notifier {
   /** Someone else replied in a thread a director takes part in (no secret link). */
   async replyToDirector(director: Director, thread: ThreadOut, comment: CommentOut): Promise<void> {
     if (!this.d.mailer || !director.email) return;
-    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.chapter ? name(thread.chapter.title) : null].filter(Boolean).join(", ");
+    const where = [`versión ${thread.version}`, `página ${thread.page}`, thread.section ? name(thread.section.title) : null].filter(Boolean).join(", ");
     await this.d.mailer.send({
       to: director.email,
       subject: `[Revisión de tesis] Respuesta de ${name(comment.author.name)}`,
@@ -214,7 +214,7 @@ export class Notifier {
       "",
     ];
     for (const { thread: t, comment: c } of items.slice(0, 50)) {
-      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.chapter ? `, ${name(t.chapter.title)}` : ""}`);
+      lines.push(`• ${name(c.author.name)} — v${t.version}, p. ${t.page}${t.section ? `, ${name(t.section.title)}` : ""}`);
       lines.push(`  ${excerpt(c.body ?? "", 300)}`);
       lines.push(`  ${threadUrl(this.d.publicUrl, t)}`);
     }

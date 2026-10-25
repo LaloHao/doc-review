@@ -88,10 +88,10 @@ export class Client {
     return data as T;
   }
 
-  async publish(pdfPath: string, avancePath: string, note: string) {
+  async publish(pdfPath: string, progressPath: string | null, note: string) {
     const form = new FormData();
     form.set("pdf", new Blob([await readFile(pdfPath)], { type: "application/pdf" }), basename(pdfPath));
-    form.set("avance", new Blob([await readFile(avancePath)], { type: "application/json" }), basename(avancePath));
+    if (progressPath) form.set("progress", new Blob([await readFile(progressPath)], { type: "application/json" }), basename(progressPath));
     form.set("note", note);
     return this.request<{ version: { number: number; page_count: number }; url: string }>("POST", "/api/versions", form);
   }
@@ -113,6 +113,6 @@ export interface ThreadJson {
   quote: string;
   status: string;
   url: string;
-  chapter: { id: string; title: string } | null;
+  section: { id: string; title: string } | null;
   comments: { id: number; author: { name: string }; body: string | null; created_at: string; deleted: boolean }[];
 }

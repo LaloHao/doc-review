@@ -107,8 +107,8 @@ export function createAppContext(deps: AppDeps): App {
         const prev = all.find((x) => x.number < v.number) ?? null;
         const d = prev
           ? diffVersions(
-              { number: prev.number, pages: await repo.pages(prev.id), avance: prev.avance, chapters: prev.chapter_pages },
-              { pages: await repo.pages(v.id), avance: v.avance, chapters: v.chapter_pages },
+              { number: prev.number, pages: await repo.pages(prev.id), progress: prev.progress, sections: prev.section_pages },
+              { pages: await repo.pages(v.id), progress: v.progress, sections: v.section_pages },
             )
           : null;
         await repo.storeDiff(v.id, d);

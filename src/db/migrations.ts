@@ -43,8 +43,8 @@ create table versions (
   pdf_sha256 text not null,
   pdf_size integer not null,
   page_count integer not null,
-  avance jsonb not null,
-  chapter_pages jsonb not null,
+  progress jsonb,
+  section_pages jsonb not null,
   created_at timestamptz not null default now()
 );
 

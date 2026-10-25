@@ -45,7 +45,7 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
   "A thread alist as the server returns it."
   `((id . ,id) (version . 2) (page . ,page) (anchor . "text") (quote . ,quote)
     (status . "open") (url . ,(format "https://r.example/v/2#hilo-%d" id))
-    (chapter . ,(and chapter `((id . ,chapter) (title . "Introducción"))))
+    (section . ,(and chapter `((id . ,chapter) (title . "Introducción"))))
     (author . ((kind . "director") (name . "Dra. Ana Torres Ruiz")))
     (comments . (((id . ,(* 10 id)) (author . ((kind . "director") (name . "Dra. Ana Torres Ruiz")))
                   (body . ,body) (created_at . "2026-10-24T18:00:00Z") (edited_at . nil) (deleted . :false))))))

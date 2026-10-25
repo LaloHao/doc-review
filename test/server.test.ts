@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sampleAvance, sampleThesis } from "./fixtures/make-pdf.mjs";
+import { sampleProgress, sampleThesis } from "./fixtures/make-pdf.mjs";
 import { OWNER_TOKEN, settle, startTestServer, type TestServer } from "./helpers.js";
 
 const ORIGIN = "https://revision.example.test";
@@ -21,7 +21,7 @@ const ownerJson = (method: string, path: string, body: unknown) =>
 function publishForm(pdf: Uint8Array, avance: unknown, note = "") {
   const f = new FormData();
   f.set("pdf", new Blob([pdf as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "tesis.pdf");
-  f.set("avance", new Blob([JSON.stringify(avance)], { type: "application/json" }), "avance.json");
+  f.set("progress", new Blob([JSON.stringify(avance)], { type: "application/json" }), "avance.json");
   f.set("note", note);
   return f;
 }
@@ -114,12 +114,12 @@ describe("security basics", () => {
 
 describe("publishing", () => {
   it("rejects files that are not PDFs and invalid avance.json", async () => {
-    let res = await owner("/api/versions", { method: "POST", body: publishForm(new TextEncoder().encode("hola"), sampleAvance()) });
+    let res = await owner("/api/versions", { method: "POST", body: publishForm(new TextEncoder().encode("hola"), sampleProgress()) });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(/no es un PDF/);
     res = await owner("/api/versions", {
       method: "POST",
-      body: publishForm(new TextEncoder().encode("%PDF-1.4\ngarbage"), sampleAvance()),
+      body: publishForm(new TextEncoder().encode("%PDF-1.4\ngarbage"), sampleProgress()),
     });
     expect(res.status).toBe(400);
     res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(), { schema: 2 }) });
@@ -135,7 +135,7 @@ describe("publishing", () => {
       const res = await fetch(small.url + "/api/versions", {
         method: "POST",
         headers: { authorization: `Bearer ${OWNER_TOKEN}` },
-        body: publishForm(big, sampleAvance()),
+        body: publishForm(big, sampleProgress()),
       });
       expect(res.status).toBe(413);
     } finally {
@@ -144,12 +144,12 @@ describe("publishing", () => {
   });
 
   it("publishes version 1 and finds the chapters in the PDF", async () => {
-    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(), sampleAvance(), "Primera versión") });
+    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(), sampleProgress(), "Primera versión") });
     expect(res.status).toBe(201);
-    const { version } = (await res.json()) as { version: { number: number; page_count: number; chapters: { id: string; start_page: number }[] } };
+    const { version } = (await res.json()) as { version: { number: number; page_count: number; sections: { id: string; start_page: number }[] } };
     expect(version.number).toBe(1);
     expect(version.page_count).toBe(5);
-    expect(version.chapters.map((c) => c.start_page)).toEqual([3, 4, 5]);
+    expect(version.sections.map((c) => c.start_page)).toEqual([3, 4, 5]);
   });
 });
 
@@ -265,10 +265,10 @@ describe("comments", () => {
     });
     expect(res.status).toBe(201);
     const { thread } = (await res.json()) as {
-      thread: { id: number; chapter: { id: string }; comments: { body_html: string; author: { name: string } }[]; url: string };
+      thread: { id: number; section: { id: string }; comments: { body_html: string; author: { name: string } }[]; url: string };
     };
     threadId = thread.id;
-    expect(thread.chapter.id).toBe("01-introduccion");
+    expect(thread.section.id).toBe("01-introduccion");
     expect(thread.comments[0]!.author.name).toBe("Dra. Ana Torres Ruiz");
     expect(thread.comments[0]!.body_html).toContain("<strong>Sugerencia:</strong>");
     expect(thread.comments[0]!.body_html).toContain("&lt;script&gt;");
@@ -430,7 +430,7 @@ describe("comments", () => {
 describe("versions and changes", () => {
   it("publishing v2 emails opted-in directors without their link, and computes the diff", async () => {
     const mailsBefore = s.mails.length;
-    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(true), sampleAvance(true), "Atendí los comentarios del capítulo 1") });
+    const res = await owner("/api/versions", { method: "POST", body: publishForm(sampleThesis(true), sampleProgress(true), "Atendí los comentarios del capítulo 1") });
     expect(res.status).toBe(201);
     await settle();
     const newMails = s.mails.slice(mailsBefore);
@@ -440,15 +440,15 @@ describe("versions and changes", () => {
     expect(newMails[0]!.text).toContain("Atendí los comentarios");
 
     const diff = (await (await director.get("/api/versions/2/diff")).json()) as {
-      diff: { previous: number; mode: string; chapters: { id: string; words_delta: number; added: number; hunks: { op: string; text: string }[][] }[] };
+      diff: { previous: number; mode: string; sections: { id: string; words_delta: number; added: number; hunks: { op: string; text: string }[][] }[] };
     };
     expect(diff.diff.previous).toBe(1);
-    expect(diff.diff.mode).toBe("chapters");
-    const intro = diff.diff.chapters.find((c) => c.id === "01-introduccion")!;
+    expect(diff.diff.mode).toBe("sections");
+    const intro = diff.diff.sections.find((c) => c.id === "01-introduccion")!;
     expect(intro.words_delta).toBe(350);
     expect(intro.added).toBeGreaterThan(0);
     expect(intro.hunks.flat().some((o) => o.op === "add" && o.text.includes("anonimizar los datos de viajes"))).toBe(true);
-    const marco = diff.diff.chapters.find((c) => c.id === "02-marco-teorico")!;
+    const marco = diff.diff.sections.find((c) => c.id === "02-marco-teorico")!;
     expect(marco.hunks).toEqual([]);
 
     // Stored with the version, not recomputed.
@@ -456,7 +456,7 @@ describe("versions and changes", () => {
     expect(await s.repo.storedDiff(v2!.id)).toMatchObject({ previous: 1 });
     await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"stored\"') where version_id = $1", [v2!.id]);
     expect(((await (await director.get("/api/versions/2/diff")).json()) as { diff: { mode: string } }).diff.mode).toBe("stored");
-    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"chapters\"') where version_id = $1", [v2!.id]);
+    await s.repo.db.query("update version_diffs set diff = jsonb_set(diff, '{mode}', '\"sections\"') where version_id = $1", [v2!.id]);
 
     const page = await director.get("/v/2/cambios");
     const text = await page.text();
@@ -587,7 +587,7 @@ describe("daily digest and the owner client", () => {
     const { writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
     await writeFile(join(s.dir, "t.pdf"), sampleThesis(true));
-    await writeFile(join(s.dir, "a.json"), JSON.stringify(sampleAvance(true)));
+    await writeFile(join(s.dir, "a.json"), JSON.stringify(sampleProgress(true)));
     const client = new Client({ url: s.url, token: OWNER_TOKEN });
     const r = await client.publish(join(s.dir, "t.pdf"), join(s.dir, "a.json"), "desde el cliente");
     expect(r.version.number).toBe(3);
@@ -685,7 +685,7 @@ describe("write limits", () => {
       const bearer = { authorization: `Bearer ${OWNER_TOKEN}` };
       const f = new FormData();
       f.set("pdf", new Blob([sampleThesis() as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "t.pdf");
-      f.set("avance", new Blob([JSON.stringify(sampleAvance())]), "a.json");
+      f.set("progress", new Blob([JSON.stringify(sampleProgress())]), "a.json");
       expect((await fetch(fresh.url + "/api/versions", { method: "POST", headers: bearer, body: f })).status).toBe(201);
       const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
       const session = async () => {

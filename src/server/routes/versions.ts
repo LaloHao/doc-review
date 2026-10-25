@@ -1,7 +1,7 @@
 // Versions: publishing (owner), the viewer and changes pages, the PDF, the diff.
 
-import { validateAvance, ValidationError } from "../../avance.js";
-import { locateChapters } from "../../diff.js";
+import { locateSections } from "../../diff.js";
+import { validateProgress, ValidationError, type Progress } from "../../progress.js";
 import { extractPdf, PdfError } from "../../pdf/extract.js";
 import type { Version } from "../../repo.js";
 import type { App, Ctx } from "../context.js";
@@ -19,8 +19,8 @@ export const versionJson = (v: Version) => ({
   pdf_size: v.pdf_size,
   pdf_sha256: v.pdf_sha256,
   created_at: new Date(v.created_at).toISOString(),
-  avance: v.avance,
-  chapters: v.chapter_pages,
+  progress: v.progress,
+  sections: v.section_pages,
 });
 
 export function versionRoutes(r: Router<Ctx>, app: App): void {
@@ -63,19 +63,22 @@ export function versionRoutes(r: Router<Ctx>, app: App): void {
     app.checkCsrf(c);
     const form = await readMultipart(c.req, config.maxPdfBytes + 2 * 1024 * 1024);
     const pdf = form.get("pdf");
-    const avanceFile = form.get("avance");
+    // progress.json is optional; "avance" is the thesis template's field name.
+    const progressRaw = form.get("progress") ?? form.get("avance");
+    const progressFile = progressRaw instanceof Blob && progressRaw.size > 0 ? progressRaw : null;
     if (!(pdf instanceof Blob)) throw new HttpError(400, "Falta el PDF (campo pdf).");
-    if (!(avanceFile instanceof Blob)) throw new HttpError(400, "Falta avance.json (campo avance).");
     if (pdf.size > config.maxPdfBytes) throw new HttpError(413, `El PDF supera ${Math.round(config.maxPdfBytes / 1048576)} MB.`);
-    if (avanceFile.size > 1024 * 1024) throw new HttpError(413, "avance.json supera 1 MB.");
+    if (progressFile && progressFile.size > 1024 * 1024) throw new HttpError(413, "progress.json supera 1 MB.");
     const noteRaw = form.get("note");
     const note = str(typeof noteRaw === "string" ? noteRaw : "", "La nota", 5000);
-    let avance;
-    try {
-      avance = validateAvance(JSON.parse(await avanceFile.text()));
-    } catch (e) {
-      if (e instanceof ValidationError) throw new HttpError(400, e.message);
-      throw new HttpError(400, "avance.json no es JSON válido.");
+    let progress: Progress | null = null;
+    if (progressFile) {
+      try {
+        progress = validateProgress(JSON.parse(await progressFile.text()));
+      } catch (e) {
+        if (e instanceof ValidationError) throw new HttpError(400, e.message);
+        throw new HttpError(400, "progress.json no es JSON válido.");
+      }
     }
     const data = new Uint8Array(await pdf.arrayBuffer());
     let extracted;
@@ -86,18 +89,18 @@ export function versionRoutes(r: Router<Ctx>, app: App): void {
       throw e;
     }
     const sha = sha256Hex(data);
-    const chapterPages = locateChapters(extracted.pages, avance);
+    const sectionPages = locateSections(extracted.pages, progress);
     const key = `pdf/${sha}.pdf`;
     await store.put(key, data, "application/pdf");
     const v = await repo.createVersion({
-      title: avance.title,
+      title: progress?.title ?? "",
       note,
       pdfKey: () => key,
       pdfSha256: sha,
       pdfSize: data.length,
       pages: extracted.pages,
-      avance,
-      chapterPages,
+      progress,
+      sectionPages,
     });
     log(`version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`);
     app.later(async () => {

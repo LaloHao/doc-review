@@ -2,9 +2,9 @@ import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { avanceFromOrg, countWords, orgProse, validateAvance } from "../src/avance.js";
+import { progressFromOrg, countWords, orgProse, validateProgress } from "../src/progress.js";
 import { loadConfig, parseS3Url } from "../src/config.js";
-import { diffSeq, hunks, locateChapters, sentences } from "../src/diff.js";
+import { diffSeq, diffVersions, hunks, locateSections, sentences } from "../src/diff.js";
 import { Notifier } from "../src/notify/notify.js";
 import { extractPdf, joinTextItems, looksLikePdf, PdfError } from "../src/pdf/extract.js";
 import type { ThreadOut } from "../src/repo.js";
@@ -14,25 +14,33 @@ import { localDayHour } from "../src/server/main.js";
 import { s3Store } from "../src/storage.js";
 import { cleanText, esc, renderComment } from "../src/text.js";
 import { fmtThread } from "../src/format.js";
-import { sampleAvance, sampleThesis } from "./fixtures/make-pdf.mjs";
+import { sampleAvance, sampleProgress, sampleThesis } from "./fixtures/make-pdf.mjs";
 
-describe("avance.json", () => {
+describe("progress.json", () => {
   it("accepts the documented schema and drops unknown keys", () => {
-    const a = validateAvance({ ...sampleAvance(), extra: 1 });
-    expect(a.chapters).toHaveLength(3);
+    const a = validateProgress({ ...sampleProgress(), extra: 1 });
+    expect(a.sections).toHaveLength(3);
+    expect(a.sections[0]!.status).toBe("draft");
     expect("extra" in a).toBe(false);
   });
+  it("accepts the thesis template's avance.json (chapters, Spanish statuses) as an alias", () => {
+    const a = validateProgress(sampleAvance(true));
+    expect(a).toEqual(validateProgress(sampleProgress(true)));
+    expect(a.sections.map((s) => s.status)).toEqual(["review", "draft", "draft"]);
+    expect(validateProgress({ ...sampleAvance(), chapters: [{ id: "a", title: "A", words: 1, status: "terminado" }] }).sections[0]!.status).toBe("done");
+  });
   it.each([
-    [{ ...sampleAvance(), schema: 2 }, /schema/],
-    [{ ...sampleAvance(), title: "" }, /title/],
-    [{ ...sampleAvance(), generated_at: "ayer" }, /generated_at/],
-    [{ ...sampleAvance(), total_words: -1 }, /total_words/],
-    [{ ...sampleAvance(), chapters: [{ id: "../x", title: "a", words: 1 }] }, /id/],
-    [{ ...sampleAvance(), chapters: [{ id: "a", title: "a", words: 1, status: "listo" }] }, /status/],
-    [{ ...sampleAvance(), chapters: [{ id: "a", title: "a", words: 1, goal: 0 }] }, /goal/],
+    [{ ...sampleProgress(), schema: 2 }, /schema/],
+    [{ ...sampleProgress(), title: "" }, /title/],
+    [{ ...sampleProgress(), generated_at: "ayer" }, /generated_at/],
+    [{ ...sampleProgress(), total_words: -1 }, /total_words/],
+    [{ ...sampleProgress(), sections: [{ id: "../x", title: "a", words: 1 }] }, /id/],
+    [{ ...sampleProgress(), sections: [{ id: "a", title: "a", words: 1, status: "listo" }] }, /status/],
+    [{ ...sampleProgress(), sections: [{ id: "a", title: "a", words: 1, goal: 0 }] }, /goal/],
+    [{ ...sampleProgress(), sections: "x" }, /array/],
     [[], /object/],
   ])("rejects %j", (input, msg) => {
-    expect(() => validateAvance(input)).toThrow(msg);
+    expect(() => validateProgress(input)).toThrow(msg);
   });
 
   it("counts words of org prose without markup, comments or drawers", () => {
@@ -53,21 +61,21 @@ Ver [[https://example.com][el sitio]].`;
     expect(countWords(prose)).toBe(9); // Introducción Un LLM local genera recomendaciones Ver el sitio
   });
 
-  it("builds avance.json from tesis.org includes", async () => {
+  it("builds progress.json from the #+INCLUDE files of an org root", async () => {
     const dir = await mkdtemp(join(tmpdir(), "avance-"));
     await mkdir(join(dir, "capitulos"));
     await writeFile(join(dir, "tesis.org"), '#+TITLE: Mi tesis\n#+INCLUDE: "capitulos/01-introduccion.org" :minlevel 1\n#+INCLUDE: "capitulos/02-marco.org" :minlevel 1\n');
     await writeFile(join(dir, "capitulos/01-introduccion.org"), "#+AVANCE_META: 3000\n#+AVANCE_ESTADO: revision\n* Introducción\nUna dos tres.\n");
-    await writeFile(join(dir, "capitulos/02-marco.org"), "* Marco teórico :noexport:\nCuatro cinco.\n");
-    const a = await avanceFromOrg(join(dir, "tesis.org"), new Date("2026-10-24T00:00:00Z"));
+    await writeFile(join(dir, "capitulos/02-marco.org"), "#+PROGRESS_GOAL: 500\n#+PROGRESS_STATUS: done\n* Marco teórico :noexport:\nCuatro cinco.\n");
+    const a = await progressFromOrg(join(dir, "tesis.org"), new Date("2026-10-24T00:00:00Z"));
     expect(a).toEqual({
       schema: 1,
       title: "Mi tesis",
       generated_at: "2026-10-24T00:00:00.000Z",
       total_words: 8,
-      chapters: [
-        { id: "01-introduccion", title: "Introducción", words: 4, goal: 3000, status: "revision" },
-        { id: "02-marco", title: "Marco teórico", words: 4, goal: null, status: null },
+      sections: [
+        { id: "01-introduccion", title: "Introducción", words: 4, goal: 3000, status: "review" },
+        { id: "02-marco", title: "Marco teórico", words: 4, goal: 500, status: "done" },
       ],
     });
   });
@@ -109,7 +117,7 @@ describe("untrusted text", () => {
       quote: evil,
       status: "open",
       url: "https://r.example/v/1#hilo-1",
-      chapter: { id: "c", title: evil },
+      section: { id: "c", title: evil },
       comments: [{ id: 1, author: { name: evil }, body: evil, created_at: "2026-10-24T10:00:00Z", deleted: false }],
     });
     expect(out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
@@ -120,7 +128,7 @@ describe("untrusted text", () => {
     const n = new Notifier({ publicUrl: "https://r.example", thesisTitle: async () => "T", telegram: { send: async (t) => void tg.push(t) }, mailer: null, ownerEmail: "", instant: true, log: () => undefined });
     const author = { kind: "director" as const, name: evil, director_id: 1 };
     await n.commentCreated(
-      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, chapter: { id: "c", title: evil }, author, created_at: "", updated_at: "", can_resolve: false,
+      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, section: { id: "c", title: evil }, author, created_at: "", updated_at: "", can_resolve: false,
         comments: [{ id: 1, author, body: evil, body_html: "", created_at: "", edited_at: null, deleted: false, mine: false }] },
       1,
     );
@@ -147,10 +155,20 @@ describe("diff", () => {
   it("splits sentences", () => {
     expect(sentences("Hola mundo. ¿Qué tal? Bien: Sí. 3 casos.")).toEqual(["Hola mundo.", "¿Qué tal?", "Bien:", "Sí.", "3 casos."]);
   });
-  it("locates chapters after the table of contents", async () => {
+  it("locates sections after the table of contents", async () => {
     const { pages } = await extractPdf(sampleThesis());
-    const ch = locateChapters(pages, validateAvance(sampleAvance()));
+    const ch = locateSections(pages, validateProgress(sampleProgress()));
     expect(ch.map((c) => c.start_page)).toEqual([3, 4, 5]);
+    expect(locateSections(pages, null)).toEqual([]);
+  });
+  it("diffs the whole document without progress.json, and has no word deltas then", async () => {
+    const a = await extractPdf(sampleThesis());
+    const b = await extractPdf(sampleThesis(true));
+    const d = diffVersions({ number: 1, pages: a.pages, progress: null, sections: [] }, { pages: b.pages, progress: null, sections: [] });
+    expect(d.mode).toBe("document");
+    expect(d.sections).toHaveLength(1);
+    expect(d.sections[0]).toMatchObject({ id: null, words_delta: null });
+    expect(d.sections[0]!.added).toBeGreaterThan(0);
   });
 });
 
@@ -282,7 +300,7 @@ describe("notifications", () => {
     status: "open",
     resolved_at: null,
     resolved_by: null,
-    chapter: { id: "01-introduccion", title: "Introducción" },
+    section: { id: "01-introduccion", title: "Introducción" },
     author: { kind: "director", name: "Dr. A", director_id: 1 },
     created_at: "2026-10-24T10:00:00Z",
     updated_at: "2026-10-24T10:00:00Z",

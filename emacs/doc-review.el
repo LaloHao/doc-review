@@ -387,7 +387,7 @@ See `doc-review--locate-in-index'."
   "Locate THREAD's quote in FILES: return (FILE START END) or nil.
 The file named after the thread's chapter id is tried first."
   (let* ((q (doc-review--normalize-quote (or (alist-get 'quote thread) "")))
-         (chapter (alist-get 'id (alist-get 'chapter thread)))
+         (chapter (alist-get 'id (alist-get 'section thread)))
          (ordered (if chapter
                       (append (cl-remove-if-not
                                (lambda (f) (equal (file-name-base f) chapter)) files)
@@ -446,7 +446,7 @@ The file named after the thread's chapter id is tried first."
               (line (doc-review--line-at (nth 0 loc) (nth 1 loc))))
           (insert (format "Fuente: [[file:%s::%d][%s:%d]]\n" (nth 0 loc) line rel line)))
       ;; Not anchored (a point comment, or text that changed): link the chapter file.
-      (let* ((chapter (alist-get 'id (alist-get 'chapter thread)))
+      (let* ((chapter (alist-get 'id (alist-get 'section thread)))
              (file (and chapter root
                         (cl-find chapter (doc-review--org-files root)
                                  :key #'file-name-base :test #'equal))))
@@ -475,7 +475,7 @@ The file named after the thread's chapter id is tried first."
          (unanchored (cl-remove-if #'cdr located))
          (groups nil))
     (dolist (pair anchored)
-      (let* ((ch (alist-get 'chapter (car pair)))
+      (let* ((ch (alist-get 'section (car pair)))
              (key (or (alist-get 'title ch) "Sin capítulo")))
         (push pair (alist-get key groups nil nil #'equal))))
     (insert (format "#+TITLE: Comentarios de los directores\n#+STARTUP: content\n\n%d hilo(s) abiertos. g: actualizar · r: responder · c: resolver (C-u c: reabrir)\n\n"

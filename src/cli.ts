@@ -3,7 +3,7 @@
 
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { avanceFromOrg } from "./avance.js";
+import { progressFromOrg } from "./progress.js";
 import { Client, loadClientConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
@@ -69,10 +69,10 @@ async function main(argv: string[]): Promise<number> {
 
     case "publish": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { message: { type: "string", short: "m" } } });
-      const [pdf, avance] = positionals;
-      if (!pdf || !avance) throw new Error("uso: doc-review publish tesis.pdf avance.json [-m nota]");
+      const [pdf, progress] = positionals;
+      if (!pdf) throw new Error("uso: doc-review publish documento.pdf [progress.json] [-m nota]");
       const client = new Client(await loadClientConfig());
-      const r = await client.publish(pdf, avance, values.message ?? "");
+      const r = await client.publish(pdf, progress ?? null, values.message ?? "");
       console.log(`publicada la versión ${r.version.number} (${r.version.page_count} páginas): ${r.url}`);
       return 0;
     }
@@ -90,10 +90,10 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
-    case "avance": {
+    case "progress": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { output: { type: "string", short: "o" } } });
       const root = positionals[0] ?? "tesis.org";
-      const a = await avanceFromOrg(root);
+      const a = await progressFromOrg(root);
       const out = JSON.stringify(a, null, 2) + "\n";
       if (values.output) await writeFile(values.output, out);
       else process.stdout.write(out);

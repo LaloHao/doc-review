@@ -12,7 +12,7 @@ export const oneLine = (s: string | null | undefined) => cleanText(s ?? "").repl
 
 export function fmtThread(t: ThreadJson): string {
   const lines = [
-    `#${t.id} · v${t.version} p. ${t.page}${t.chapter ? ` · ${oneLine(t.chapter.title)}` : ""} · ${t.status === "open" ? "abierto" : "resuelto"}`,
+    `#${t.id} · v${t.version} p. ${t.page}${t.section ? ` · ${oneLine(t.section.title)}` : ""} · ${t.status === "open" ? "abierto" : "resuelto"}`,
   ];
   if (t.quote) lines.push(`  «${oneLine(t.quote).slice(0, 200)}»`);
   for (const c of t.comments) {

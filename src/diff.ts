@@ -1,14 +1,16 @@
 // What changed between two versions:
-// - words per chapter, from avance.json (exact, comes from the org sources);
-// - a text diff per chapter, computed here from the text pdf.js extracts from each
-//   PDF. Pages are assigned to chapters by finding each chapter's title at the top of
-//   a page (after the table of contents); when no chapter can be located the diff is
-//   done for the whole document. The diff unit is the sentence, which reads better
-//   than a word diff for prose and keeps the output small.
+// - words per section, from progress.json when both versions have one (it comes
+//   from the sources, so it is exact);
+// - a text diff per section, computed here from the text pdf.js extracts from
+//   each PDF. Pages are assigned to sections by finding each section's title at
+//   the top of a page (after any table of contents); when no section can be
+//   located (or there is no progress.json) the diff is done for the whole
+//   document. The diff unit is the sentence, which reads better than a word
+//   diff for prose and keeps the output small.
 
-import type { Avance } from "./avance.js";
+import type { Progress } from "./progress.js";
 
-export interface ChapterPages {
+export interface SectionPages {
   id: string;
   title: string;
   /** First page (1-based) or null when the title wasn't found. */
@@ -24,15 +26,16 @@ export function normalizeLoose(s: string): string {
     .trim();
 }
 
-/** Finds the page where each chapter starts. */
-export function locateChapters(pages: string[], avance: Avance): ChapterPages[] {
-  const titles = avance.chapters.map((c) => normalizeLoose(c.title));
+/** Finds the page where each section starts (none without progress.json). */
+export function locateSections(pages: string[], progress: Progress | null): SectionPages[] {
+  if (!progress) return [];
+  const titles = progress.sections.map((c) => normalizeLoose(c.title));
   const heads = pages.map((p) => normalizeLoose(p.slice(0, 300)));
   const full = pages.map((p) => normalizeLoose(p));
-  // A page that mentions many chapter titles is a table of contents.
+  // A page that mentions many section titles is a table of contents.
   const isToc = full.map((p) => titles.filter((t) => t && p.includes(t)).length >= Math.min(3, titles.length) && titles.length > 1);
   let from = 0;
-  return avance.chapters.map((c, i) => {
+  return progress.sections.map((c, i) => {
     const t = titles[i]!;
     for (let p = from; p < pages.length && t; p++) {
       if (isToc[p]) continue;
@@ -48,10 +51,10 @@ export function locateChapters(pages: string[], avance: Avance): ChapterPages[] 
   });
 }
 
-/** Chapter id of a page, given the located chapter starts (null = before the first). */
-export function chapterOfPage(chapters: ChapterPages[], page: number): ChapterPages | null {
-  let best: ChapterPages | null = null;
-  for (const c of chapters) {
+/** The section of a page, given the located section starts (null = before the first). */
+export function sectionOfPage(sections: SectionPages[], page: number): SectionPages | null {
+  let best: SectionPages | null = null;
+  for (const c of sections) {
     if (c.start_page !== null && c.start_page <= page && (best === null || c.start_page >= (best.start_page ?? 0))) {
       best = c;
     }
@@ -129,7 +132,7 @@ export function sentences(text: string): string[] {
     .filter(Boolean);
 }
 
-export interface ChapterDiff {
+export interface SectionDiff {
   id: string | null;
   title: string;
   words_before: number | null;
@@ -143,8 +146,8 @@ export interface ChapterDiff {
 
 export interface VersionDiff {
   previous: number;
-  mode: "chapters" | "document";
-  chapters: ChapterDiff[];
+  mode: "sections" | "document";
+  sections: SectionDiff[];
 }
 
 /** Groups diff ops into hunks of changes with `context` equal entries around them. */
@@ -184,8 +187,8 @@ function textOfRange(pages: string[], from: number | null, to: number | null): s
   return pages.slice(from - 1, to === null ? undefined : to - 1).map(stripPageNumber).join("\n");
 }
 
-function chapterTexts(pages: string[], chapters: ChapterPages[]): Map<string, string> {
-  const located = chapters.filter((c) => c.start_page !== null).sort((a, b) => a.start_page! - b.start_page!);
+function sectionTexts(pages: string[], sections: SectionPages[]): Map<string, string> {
+  const located = sections.filter((c) => c.start_page !== null).sort((a, b) => a.start_page! - b.start_page!);
   const out = new Map<string, string>();
   located.forEach((c, i) => {
     out.set(c.id, textOfRange(pages, c.start_page, located[i + 1]?.start_page ?? null));
@@ -193,13 +196,15 @@ function chapterTexts(pages: string[], chapters: ChapterPages[]): Map<string, st
   return out;
 }
 
-export function diffVersions(
-  prev: { number: number; pages: string[]; avance: Avance; chapters: ChapterPages[] },
-  next: { pages: string[]; avance: Avance; chapters: ChapterPages[] },
-): VersionDiff {
-  const prevWords = new Map(prev.avance.chapters.map((c) => [c.id, c.words]));
-  const prevTexts = chapterTexts(prev.pages, prev.chapters);
-  const nextTexts = chapterTexts(next.pages, next.chapters);
+export interface DiffSide {
+  pages: string[];
+  progress: Progress | null;
+  sections: SectionPages[];
+}
+
+export function diffVersions(prev: DiffSide & { number: number }, next: DiffSide): VersionDiff {
+  const prevTexts = sectionTexts(prev.pages, prev.sections);
+  const nextTexts = sectionTexts(next.pages, next.sections);
   const located = nextTexts.size > 0 && prevTexts.size > 0;
 
   const diffText = (a: string, b: string) => {
@@ -212,15 +217,21 @@ export function diffVersions(
     };
   };
 
-  const ids = new Set([...next.avance.chapters.map((c) => c.id), ...prev.avance.chapters.map((c) => c.id)]);
-  const titles = new Map([...prev.avance.chapters, ...next.avance.chapters].map((c) => [c.id, c.title]));
-  const nextWords = new Map(next.avance.chapters.map((c) => [c.id, c.words]));
-  const chapters: ChapterDiff[] = [...ids].map((id) => {
-    const before = prevWords.get(id) ?? null;
-    const after = nextWords.get(id) ?? null;
-    const d = located && (prevTexts.has(id) || nextTexts.has(id))
-      ? diffText(prevTexts.get(id) ?? "", nextTexts.get(id) ?? "")
-      : { hunks: [], added: 0, removed: 0 };
+  const prevSections = prev.progress?.sections ?? [];
+  const nextSections = next.progress?.sections ?? [];
+  // Word counts are only comparable when both versions have progress.json.
+  const words = prev.progress !== null && next.progress !== null;
+  const prevWords = new Map(prevSections.map((c) => [c.id, c.words]));
+  const nextWords = new Map(nextSections.map((c) => [c.id, c.words]));
+  const ids = new Set([...nextSections.map((c) => c.id), ...prevSections.map((c) => c.id)]);
+  const titles = new Map([...prevSections, ...nextSections].map((c) => [c.id, c.title]));
+  const sections: SectionDiff[] = [...ids].map((id) => {
+    const before = words ? (prevWords.get(id) ?? null) : null;
+    const after = words ? (nextWords.get(id) ?? null) : null;
+    const d =
+      located && (prevTexts.has(id) || nextTexts.has(id))
+        ? diffText(prevTexts.get(id) ?? "", nextTexts.get(id) ?? "")
+        : { hunks: [], added: 0, removed: 0 };
     return {
       id,
       title: titles.get(id) ?? id,
@@ -233,8 +244,8 @@ export function diffVersions(
 
   if (!located) {
     const d = diffText(prev.pages.map(stripPageNumber).join("\n"), next.pages.map(stripPageNumber).join("\n"));
-    chapters.push({ id: null, title: "Documento completo", words_before: null, words_after: null, words_delta: null, ...d });
-    return { previous: prev.number, mode: "document", chapters };
+    sections.push({ id: null, title: "", words_before: null, words_after: null, words_delta: null, ...d });
+    return { previous: prev.number, mode: "document", sections };
   }
-  return { previous: prev.number, mode: "chapters", chapters };
+  return { previous: prev.number, mode: "sections", sections };
 }

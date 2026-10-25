@@ -120,6 +120,20 @@ export function sampleThesis(v2 = false) {
   ]);
 }
 
+/** progress.json for sampleThesis (the generic shape: sections, English statuses). */
+export function sampleProgress(v2 = false) {
+  const a = sampleAvance(v2);
+  const status = { borrador: "draft", revision: "review", terminado: "done" };
+  return {
+    schema: 1,
+    title: a.title,
+    generated_at: a.generated_at,
+    total_words: a.total_words,
+    sections: a.chapters.map((c) => ({ ...c, status: c.status ? status[c.status] : null })),
+  };
+}
+
+/** The same as avance.json, the thesis template's shape (chapters, Spanish statuses). */
 export function sampleAvance(v2 = false) {
   return {
     schema: 1,
@@ -142,5 +156,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   const v2 = which === "v2";
   writeFileSync(out, sampleThesis(v2));
+  writeFileSync(out.replace(/\.pdf$/, ".progress.json"), JSON.stringify(sampleProgress(v2), null, 2));
   writeFileSync(out.replace(/\.pdf$/, ".avance.json"), JSON.stringify(sampleAvance(v2), null, 2));
 }

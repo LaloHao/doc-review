@@ -8,3 +8,10 @@ export function sampleAvance(v2?: boolean): {
   total_words: number;
   chapters: { id: string; title: string; words: number; goal: number | null; status: string | null }[];
 };
+export function sampleProgress(v2?: boolean): {
+  schema: 1;
+  title: string;
+  generated_at: string;
+  total_words: number;
+  sections: { id: string; title: string; words: number; goal: number | null; status: string | null }[];
+};

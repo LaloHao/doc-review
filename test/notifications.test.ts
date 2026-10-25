@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { Notifier, type Mail } from "../src/notify/notify.js";
 import { runDigest, runDirectorDigests } from "../src/server/main.js";
-import { sampleAvance, sampleThesis } from "./fixtures/make-pdf.mjs";
+import { sampleProgress, sampleThesis } from "./fixtures/make-pdf.mjs";
 import { OWNER_TOKEN, settle, startTestServer, type TestServer } from "./helpers.js";
 
 const ORIGIN = "https://revision.example.test";
@@ -53,7 +53,7 @@ beforeAll(async () => {
   s = await startTestServer();
   const f = new FormData();
   f.set("pdf", new Blob([sampleThesis() as Uint8Array<ArrayBuffer>], { type: "application/pdf" }), "t.pdf");
-  f.set("avance", new Blob([JSON.stringify(sampleAvance())]), "a.json");
+  f.set("progress", new Blob([JSON.stringify(sampleProgress())]), "a.json");
   expect((await fetch(s.url + "/api/versions", { method: "POST", headers: bearer, body: f })).status).toBe(201);
   A = await addDirector("Dr. A", "a@example.test", "instant");
   B = await addDirector("Dra. B", "b@example.test", "instant");

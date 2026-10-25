@@ -1,7 +1,7 @@
 // Server-rendered pages (Spanish UI). Every interpolated value goes through `esc`.
 // No inline scripts or styles: the CSP only allows 'self'.
 
-import type { Avance } from "../avance.js";
+import type { Progress } from "../progress.js";
 import type { VersionDiff } from "../diff.js";
 import type { Director, ReplyNotify, Version, Visibility } from "../repo.js";
 import { esc } from "../text.js";
@@ -16,9 +16,9 @@ export interface Layout {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  borrador: "Borrador",
-  revision: "En revisión",
-  terminado: "Terminado",
+  draft: "Borrador",
+  review: "En revisión",
+  done: "Terminado",
 };
 
 const dateFmt = new Intl.DateTimeFormat("es-MX", {
@@ -154,9 +154,10 @@ export function loginPage(pre: string, error = ""): string {
   );
 }
 
-function progressTable(avance: Avance, prev: Avance | null): string {
-  const prevWords = new Map(prev?.chapters.map((c) => [c.id, c.words]) ?? []);
-  const rows = avance.chapters
+function progressTable(avance: Progress | null, prev: Progress | null): string {
+  if (!avance) return `<p class="muted">Sin progress.json.</p>`;
+  const prevWords = new Map(prev?.sections.map((c) => [c.id, c.words]) ?? []);
+  const rows = avance.sections
     .map((c) => {
       const pct = c.goal ? Math.min(100, Math.round((c.words / c.goal) * 100)) : null;
       const before = prevWords.get(c.id);
@@ -180,10 +181,10 @@ function progressTable(avance: Avance, prev: Avance | null): string {
 
 function diffHtml(diff: VersionDiff | null): string {
   if (!diff) return `<p class="muted">Es la primera versión: no hay cambios que mostrar.</p>`;
-  const sections = diff.chapters
+  const sections = diff.sections
     .filter((c) => c.hunks === null || c.hunks.length > 0 || (c.words_delta ?? 0) !== 0)
     .map((c) => {
-      const head = `<summary><strong>${esc(c.title)}</strong>
+      const head = `<summary><strong>${esc(c.title || "Documento completo")}</strong>
         ${c.words_delta === null ? "" : `<span class="${c.words_delta > 0 ? "plus" : c.words_delta < 0 ? "minus" : "muted"}">${c.words_delta > 0 ? "+" : ""}${num(c.words_delta)} palabras</span>`}
         ${c.hunks ? `<span class="muted">· ${c.added} oraciones nuevas, ${c.removed} quitadas</span>` : ""}</summary>`;
       const body =
@@ -219,7 +220,7 @@ export function changesPage(
       <p class="muted">Publicada el ${esc(fmtDate(v.created_at))} · ${v.page_count} páginas</p>
       ${v.note ? `<blockquote class="note">${esc(v.note)}</blockquote>` : ""}
       <h2>Avance por capítulo</h2>
-      ${progressTable(v.avance, prev?.avance ?? null)}
+      ${progressTable(v.progress, prev?.progress ?? null)}
       <h2>Qué cambió</h2>
       ${diffHtml(diff)}
     </main>`,
@@ -289,7 +290,7 @@ export function ownerDashboard(
         <td><a href="/v/${v.number}">Versión ${v.number}</a></td>
         <td>${esc(fmtDate(v.created_at))}</td>
         <td class="num">${v.page_count}</td>
-        <td class="num">${num(v.avance.total_words)}</td>
+        <td class="num">${v.progress ? num(v.progress.total_words) : "—"}</td>
         <td class="num">${input.openByVersion.get(v.number) ?? 0}</td>
         <td>${esc(v.note)}</td>
         <td><a href="/v/${v.number}/cambios">cambios</a></td>
@@ -323,7 +324,7 @@ export function ownerDashboard(
       <h1>Tu tesis</h1>
       ${latest ? `<p class="lead">${esc(latest.title)}</p>` : `<p>Aún no has publicado ninguna versión. Usa <code>doc-review publish</code>, Emacs (<code>doc-review-publicar</code>) o el formulario de abajo.</p>`}
 
-      ${latest ? `<section><h2>Avance (versión ${latest.number})</h2>${progressTable(latest.avance, prev?.avance ?? null)}</section>` : ""}
+      ${latest ? `<section><h2>Avance (versión ${latest.number})</h2>${progressTable(latest.progress, prev?.progress ?? null)}</section>` : ""}
 
       <section>
         <h2>Versiones</h2>
@@ -332,7 +333,7 @@ export function ownerDashboard(
           <summary>Publicar una versión desde el navegador</summary>
           <form id="upload-form" class="stack">
             <label>PDF compilado (máx. ${input.maxPdfMb} MB) <input type="file" name="pdf" accept="application/pdf" required></label>
-            <label>avance.json <input type="file" name="avance" accept="application/json,.json" required></label>
+            <label>progress.json (opcional) <input type="file" name="progress" accept="application/json,.json"></label>
             <label>Nota de la versión (opcional) <textarea name="note" rows="3" maxlength="5000"></textarea></label>
             <button type="submit">Publicar versión</button>
             <p id="upload-status" class="muted" role="status"></p>

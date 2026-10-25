@@ -1,8 +1,8 @@
 // Data access. All SQL lives here; handlers get plain objects back.
 
-import type { Avance } from "./avance.js";
 import type { Db, Queryable } from "./db/db.js";
-import { chapterOfPage, type ChapterPages, type VersionDiff } from "./diff.js";
+import { sectionOfPage, type SectionPages, type VersionDiff } from "./diff.js";
+import type { Progress } from "./progress.js";
 import { newSecret, sha256Hex } from "./server/crypto.js";
 import { renderComment } from "./text.js";
 
@@ -43,8 +43,8 @@ export interface Version {
   pdf_sha256: string;
   pdf_size: number;
   page_count: number;
-  avance: Avance;
-  chapter_pages: ChapterPages[];
+  progress: Progress | null;
+  section_pages: SectionPages[];
   created_at: Date;
 }
 
@@ -81,7 +81,7 @@ export interface ThreadOut {
   status: "open" | "resolved";
   resolved_at: string | null;
   resolved_by: string | null;
-  chapter: { id: string; title: string } | null;
+  section: { id: string; title: string } | null;
   author: { kind: AuthorKind; name: string; director_id: number | null };
   created_at: string;
   updated_at: string;
@@ -292,13 +292,13 @@ export class Repo {
     pdfSha256: string;
     pdfSize: number;
     pages: string[];
-    avance: Avance;
-    chapterPages: ChapterPages[];
+    progress: Progress | null;
+    sectionPages: SectionPages[];
   }): Promise<Version> {
     return this.db.tx(async (q) => {
       const [{ n } = { n: 1 }] = await q.query<{ n: number }>("select coalesce(max(number), 0) + 1 as n from versions");
       const [v] = await q.query<Version>(
-        `insert into versions (number, title, note, pdf_key, pdf_sha256, pdf_size, page_count, avance, chapter_pages)
+        `insert into versions (number, title, note, pdf_key, pdf_sha256, pdf_size, page_count, progress, section_pages)
          values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb) returning *`,
         [
           n,
@@ -308,8 +308,8 @@ export class Repo {
           input.pdfSha256,
           input.pdfSize,
           input.pages.length,
-          JSON.stringify(input.avance),
-          JSON.stringify(input.chapterPages),
+          input.progress === null ? null : JSON.stringify(input.progress),
+          JSON.stringify(input.sectionPages),
         ],
       );
       for (let i = 0; i < input.pages.length; i += 100) {
@@ -489,9 +489,9 @@ export class Repo {
       director_id: number | null;
       created_at: Date;
       updated_at: Date;
-      chapter_pages: ChapterPages[];
+      section_pages: SectionPages[];
     }>(
-      `select t.*, v.number, v.chapter_pages from threads t join versions v on v.id = t.version_id
+      `select t.*, v.number, v.section_pages from threads t join versions v on v.id = t.version_id
        ${where.length ? "where " + where.join(" and ") : ""}
        order by v.number desc, t.page, t.id`,
       params,
@@ -542,7 +542,7 @@ export class Repo {
     };
     return threads
       .map((t): ThreadOut => {
-        const ch = chapterOfPage(t.chapter_pages ?? [], t.page);
+        const ch = sectionOfPage(t.section_pages ?? [], t.page);
         return {
           id: t.id,
           version: t.number,
@@ -553,7 +553,7 @@ export class Repo {
           status: t.status,
           resolved_at: iso(t.resolved_at),
           resolved_by: resolvedBy(t),
-          chapter: ch ? { id: ch.id, title: ch.title } : null,
+          section: ch ? { id: ch.id, title: ch.title } : null,
           author: author(t.author_kind, t.director_id),
           created_at: iso(t.created_at)!,
           updated_at: iso(t.updated_at)!,
