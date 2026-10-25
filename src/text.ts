@@ -17,7 +17,7 @@ export function esc(s: unknown): string {
 
 /**
  * C0/C1 control characters (except \t and \n) and bidirectional controls. Text
- * from directors may reach terminals (CLI), Emacs buffers, Telegram and email:
+ * from reviewers may reach terminals (CLI), Emacs buffers, Telegram and email:
  * escape sequences could rewrite a terminal, and bidi overrides can make text
  * read differently from what it is ("Trojan Source").
  */

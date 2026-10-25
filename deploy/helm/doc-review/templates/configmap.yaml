@@ -19,7 +19,7 @@ data:
   NOTIFY_INSTANT: {{ .Values.config.notifyInstant | quote }}
   DIGEST_HOUR: {{ .Values.config.digestHour | toString | quote }}
   EMAIL_OWNER_TO: {{ .Values.config.ownerEmail | quote }}
-  MAX_DIRECTOR_COMMENTS_PER_DAY: {{ .Values.config.maxDirectorCommentsPerDay | quote }}
+  MAX_REVIEWER_COMMENTS_PER_DAY: {{ .Values.config.maxReviewerCommentsPerDay | quote }}
   # The hook Job migrates; the app only checks that nothing is pending.
   MIGRATE_ON_START: {{ ternary "false" "true" (eq (include "doc-review.migrationJob" .) "true") | quote }}
   {{- with .Values.config.smtp }}

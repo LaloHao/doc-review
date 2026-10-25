@@ -30,7 +30,8 @@ envSecretName: ""
 
 # Non-secret settings (a ConfigMap; the Deployment restarts when they change).
 config:
-  ownerName: "Eduardo Ejemplo"
+  # Your name, as reviewers see it next to your comments.
+  ownerName: "Owner"
   timeZone: America/Mexico_City
   # Read the client IP from CF-Connecting-IP (only behind Cloudflare Tunnel).
   trustCloudflare: true
@@ -40,14 +41,14 @@ config:
   digestHour: ""
   # Owner address for email notifications ("" = none).
   ownerEmail: ""
-  # Threads + replies per director in 24 hours (0 = no cap).
-  maxDirectorCommentsPerDay: 500
+  # Threads + replies per reviewer in 24 hours, all documents together (0 = no cap).
+  maxReviewerCommentsPerDay: 500
   smtp:
     host: ""            # e.g. smtp.protonmail.ch
     port: 587
     security: starttls  # starttls | tls (465) | none (local relay only)
-    user: ""            # e.g. tesis@your-domain (the SMTP token's address)
-    from: ""            # defaults to user; e.g. "Revisión de tesis <tesis@your-domain>"
+    user: ""            # e.g. review@your-domain (the SMTP token's address)
+    from: ""            # defaults to user; e.g. "Document review <review@your-domain>"
 
 # Where the PDFs go.
 # - pvc: a PersistentVolumeClaim mounted at /data (created here, kept on uninstall).

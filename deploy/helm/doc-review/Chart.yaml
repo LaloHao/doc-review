@@ -1,7 +1,7 @@
 apiVersion: v2
 name: doc-review
-description: Thesis directors comment on the thesis PDF; the author gets the comments on the web, Telegram, email and Emacs
+description: Document review — reviewers comment on PDF versions of your documents; you get the comments on the web, Telegram, email and Emacs
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/LaloHao/doc-review
