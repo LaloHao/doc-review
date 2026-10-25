@@ -72,7 +72,9 @@ describe("security basics", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
-    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(await res.text()).toContain('<meta name="referrer" content="same-origin">');
     expect(res.headers.get("x-frame-options")).toBe("DENY");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("strict-transport-security")).toContain("max-age");
@@ -193,6 +195,40 @@ describe("director links", () => {
     await director.login();
     await codirector.get(new URL(codirectorLink).pathname);
     await codirector.login();
+  });
+
+  it("a link opened in a browser with someone else's session asks before switching", async () => {
+    const b = new Browser();
+    await b.get(new URL(codirectorLink).pathname);
+    await b.login();
+    const oldCookie = b.cookie;
+    const secret = new URL(directorLink).pathname.split("/").pop()!;
+    const page = await b.get(`/acceso/${secret}`);
+    expect(page.status).toBe(200);
+    expect(page.headers.getSetCookie()).toEqual([]);
+    expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+    const text = await page.text();
+    expect(text).toContain("Entrar como Dra. Ana Torres Ruiz");
+    expect(text).toContain("Dr. Luis Méndez Ortega");
+    expect(((await (await b.get("/api/me")).json()) as { name: string }).name).toBe("Dr. Luis Méndez Ortega");
+    const post = (csrf: string, extra: Record<string, string> = {}) =>
+      fetch(s.url + "/acceso", {
+        method: "POST",
+        redirect: "manual",
+        headers: { cookie: b.cookie, origin: "null", "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded", ...extra },
+        body: new URLSearchParams({ _csrf: csrf, secret }).toString(),
+      });
+    expect((await post("wrong")).status).toBe(403);
+    expect((await post(b.csrf, { "sec-fetch-site": "cross-site" })).status).toBe(403);
+    const ok = await post(b.csrf);
+    expect(ok.status).toBe(303);
+    b.cookie = ok.headers.getSetCookie()[0]!.split(";")[0]!;
+    expect(((await (await b.get("/api/me")).json()) as { name: string }).name).toBe("Dra. Ana Torres Ruiz");
+    expect((await fetch(s.url + "/api/me", { headers: { cookie: oldCookie } })).status).toBe(401);
+    // Its own link again: no question, no new session.
+    const again = await b.get(`/acceso/${secret}`);
+    expect(again.status).toBe(303);
+    expect(again.headers.getSetCookie()).toEqual([]);
   });
 
   it("an invalid link gives 404", async () => {
@@ -482,7 +518,7 @@ describe("revocation and rotation", () => {
   });
 });
 
-describe("HTML form posts with Referrer-Policy: no-referrer", () => {
+describe("HTML form posts that carry Origin: null", () => {
   it("accept Origin: null only with Sec-Fetch-Site: same-origin", async () => {
     // A fresh server: the login limiter of the shared one is exhausted by now.
     const fresh = await startTestServer();

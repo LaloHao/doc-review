@@ -48,7 +48,8 @@ export function page(l: Layout, body: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
+<meta name="robots" content="noindex, nofollow">
 ${l.csrf ? `<meta name="csrf-token" content="${esc(l.csrf)}">` : ""}
 <title>${esc(l.title)}</title>
 <link rel="stylesheet" href="/static/app.css">
@@ -64,6 +65,23 @@ ${body}
 
 export function messagePage(title: string, message: string, extra = ""): string {
   return page({ title }, `<main class="narrow"><h1>${esc(title)}</h1><p>${esc(message)}</p>${extra}</main>`);
+}
+
+/** /acceso/<secret> when the browser already has a session of someone else. */
+export function switchIdentityPage(current: string, next: string, secret: string, csrf: string): string {
+  return page(
+    { title: "Cambiar de usuario" },
+    `<main class="narrow">
+      <h1>¿Entrar como ${esc(next)}?</h1>
+      <p>Este navegador ya tiene abierta una sesión de <strong>${esc(current)}</strong>. Si continúa, esa sesión se cierra y entra con el enlace de <strong>${esc(next)}</strong>.</p>
+      <form method="post" action="/acceso" class="row">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <input type="hidden" name="secret" value="${esc(secret)}">
+        <button type="submit">Entrar como ${esc(next)}</button>
+        <a href="/">Seguir como ${esc(current)}</a>
+      </form>
+    </main>`,
+  );
 }
 
 export function landingPage(): string {

@@ -37,7 +37,7 @@ import {
 } from "./http.js";
 import * as pages from "./pages.js";
 import { cleanText, esc } from "../text.js";
-import { RateLimiter } from "./ratelimit.js";
+import { ipBucket, RateLimiter } from "./ratelimit.js";
 
 export const SESSION_COOKIE = "__Host-rt_session";
 const PRE_COOKIE = "__Host-rt_pre";
@@ -103,7 +103,9 @@ export function securityHeaders(config: Config): Record<string, string> {
       "base-uri 'none'",
       "frame-ancestors 'none'",
     ].join("; "),
-    "referrer-policy": "no-referrer",
+    // same-origin: form posts carry a real Origin header; nothing leaks to other sites.
+    "referrer-policy": "same-origin",
+    "x-robots-tag": "noindex, nofollow",
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "cross-origin-opener-policy": "same-origin",
@@ -213,9 +215,10 @@ export function createApp(deps: AppDeps) {
   const whoName = (s: Session) => (s.kind === "owner" ? config.ownerName : s.director!.name);
 
   /**
-   * Same-origin check. Fetch requests carry the real Origin. HTML form posts carry
-   * `Origin: null` because of `Referrer-Policy: no-referrer`; for those (and for
-   * clients without Origin) Sec-Fetch-Site must say same-origin.
+   * Same-origin check. Browsers send the real Origin on fetch requests and, with
+   * `Referrer-Policy: same-origin`, on form posts. Some send `Origin: null` (for
+   * example from the /acceso page, which is `no-referrer`); for those, and for
+   * clients without Origin, Sec-Fetch-Site must say same-origin.
    */
   const sameOrigin = (c: Ctx) => {
     const origin = c.req.headers.origin;
@@ -355,17 +358,36 @@ export function createApp(deps: AppDeps) {
     );
   });
 
-  // Director link: create a session, then leave the secret URL behind.
-  route("GET", "/acceso/:secret", async (c) => {
-    limited(linkLimiter, c.ip);
-    const director = await repo.directorByLink(c.params[0]!);
+  // Director link: create a session, then leave the secret URL behind. If this
+  // browser already has a session of someone else, ask first (a link opened by
+  // mistake, or sent by someone else, shouldn't silently switch identities).
+  const enterAsDirector = async (c: Ctx, secret: string, confirmed: boolean) => {
+    limited(linkLimiter, ipBucket(c.ip));
+    // The page's own URL holds the secret: never send it as a referrer.
+    c.res.setHeader("referrer-policy", "no-referrer");
+    const director = await repo.directorByLink(secret);
     if (!director) {
       return html(c.res, 404, pages.messagePage("Enlace no válido", "Este enlace no es válido o fue revocado. Pida un enlace nuevo al autor de la tesis."));
     }
-    if (c.session) await repo.deleteSession(c.session.idHash);
+    if (c.session) {
+      if (c.session.kind === "director" && c.session.director?.id === director.id) return redirect(c.res, "/");
+      if (!confirmed) {
+        return html(c.res, 200, pages.switchIdentityPage(whoName(c.session), director.name, secret, c.session.csrf));
+      }
+      await repo.deleteSession(c.session.idHash);
+    }
     const s = await repo.createSession("director", director.id, DIRECTOR_TTL);
     log(`director session created for director #${director.id}`);
     redirect(c.res, "/", { "set-cookie": cookie(SESSION_COOKIE, s.id, DIRECTOR_TTL / 1000) });
+  };
+
+  route("GET", "/acceso/:secret", async (c) => enterAsDirector(c, c.params[0]!, false));
+
+  route("POST", "/acceso", async (c) => {
+    const form = await readForm(c.req);
+    if (c.session) checkCsrf(c, form.get("_csrf") ?? "");
+    else if (!sameOrigin(c)) throw new HttpError(403, "Origen no permitido.");
+    await enterAsDirector(c, form.get("secret") ?? "", true);
   });
 
   route("GET", "/entrar", async (c) => {

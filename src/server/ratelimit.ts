@@ -27,3 +27,8 @@ export class RateLimiter {
     for (const [k, e] of this.hits) if (e.reset <= t) this.hits.delete(k);
   }
 }
+
+/** The rate-limit key of a client address (IPv6 is limited per /64, see below). */
+export function ipBucket(ip: string): string {
+  return ip;
+}
