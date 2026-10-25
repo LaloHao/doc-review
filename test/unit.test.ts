@@ -132,6 +132,11 @@ describe("pdf", () => {
 });
 
 describe("misc", () => {
+  it("never logs director link paths", async () => {
+    const { loggablePath } = await import("../src/server/app.js");
+    expect(loggablePath("/acceso/abcdef")).toBe("/acceso/[oculto]");
+    expect(loggablePath("/api/threads")).toBe("/api/threads");
+  });
   it("compares secrets in constant time", () => {
     expect(safeEqual("abc", "abc")).toBe(true);
     expect(safeEqual("abc", "abd")).toBe(false);

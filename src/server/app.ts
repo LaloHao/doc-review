@@ -114,9 +114,27 @@ export function securityHeaders(config: Config): Record<string, string> {
   return h;
 }
 
-function toInt(s: string | undefined | null): number | null {
-  if (!s || !/^\d{1,9}$/.test(s)) return null;
+const MAX_INT = 2_147_483_647; // Postgres integer
+
+/** A numeric path or query parameter: a positive integer, else 400. */
+function toInt(s: string | undefined | null, field = "El identificador"): number {
+  if (!s || !/^\d{1,10}$/.test(s) || Number(s) < 1 || Number(s) > MAX_INT) {
+    throw new HttpError(400, `${field} debe ser un entero positivo.`);
+  }
   return Number(s);
+}
+
+/** A numeric JSON field: an integer in [min, max], else 400. */
+function intField(v: unknown, field: string, min = 1, max = MAX_INT): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) {
+    throw new HttpError(400, `${field} debe ser un entero entre ${min} y ${max}.`);
+  }
+  return v;
+}
+
+/** Paths are logged without director link secrets. */
+export function loggablePath(pathname: string): string {
+  return pathname.startsWith("/acceso/") ? "/acceso/[oculto]" : pathname.slice(0, 200);
 }
 
 function str(v: unknown, field: string, max: number, opts: { required?: boolean } = {}): string {
@@ -147,6 +165,18 @@ function parseRects(v: unknown): Rect[] {
 
 function isEmail(s: string): boolean {
   return /^[^\s@<>"',;]+@[^\s@<>"',;]+\.[^\s@<>"',;]+$/.test(s) && s.length <= 320;
+}
+
+/**
+ * Errors caused by the request rather than the server: malformed URL escapes and
+ * Postgres data exceptions (class 22: bad integer, out of range…). They become a
+ * 400 and are not logged with a stack trace.
+ */
+function clientError(e: unknown): HttpError | null {
+  if (e instanceof URIError) return new HttpError(400, "Dirección no válida.");
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.startsWith("22")) return new HttpError(400, "Dato no válido.");
+  return null;
 }
 
 export function createApp(deps: AppDeps) {
@@ -211,8 +241,8 @@ export function createApp(deps: AppDeps) {
     csrf: c.session?.csrf,
   });
 
-  const getVersionOr404 = async (n: number | null): Promise<Version> => {
-    const v = n === null ? null : await repo.getVersion(n);
+  const getVersionOr404 = async (n: number): Promise<Version> => {
+    const v = await repo.getVersion(n);
     if (!v) throw new HttpError(404, "No existe esa versión.");
     return v;
   };
@@ -234,8 +264,7 @@ export function createApp(deps: AppDeps) {
   };
 
   /** A thread, if the viewer may see it (visibility setting applies to directors). */
-  const visibleThread = async (c: Ctx, id: number | null) => {
-    if (id === null) throw new HttpError(404, "No existe ese hilo.");
+  const visibleThread = async (c: Ctx, id: number) => {
     const [t] = await repo.listThreads(viewerOf(c), { threadId: id });
     if (!t) throw new HttpError(404, "No existe ese hilo.");
     return t;
@@ -329,7 +358,7 @@ export function createApp(deps: AppDeps) {
   // Director link: create a session, then leave the secret URL behind.
   route("GET", "/acceso/:secret", async (c) => {
     limited(linkLimiter, c.ip);
-    const director = await repo.directorByLink(decodeURIComponent(c.params[0]!));
+    const director = await repo.directorByLink(c.params[0]!);
     if (!director) {
       return html(c.res, 404, pages.messagePage("Enlace no válido", "Este enlace no es válido o fue revocado. Pida un enlace nuevo al autor de la tesis."));
     }
@@ -384,13 +413,13 @@ export function createApp(deps: AppDeps) {
 
   route("GET", "/v/:n", async (c) => {
     requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0]));
+    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
     html(c.res, 200, pages.viewerPage(layout(c, `Tesis · versión ${v.number}`), v, await repo.listVersions()));
   });
 
   route("GET", "/v/:n/cambios", async (c) => {
     requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0]));
+    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
     const all = await repo.listVersions();
     const prev = all.find((x) => x.number < v.number) ?? null;
     html(c.res, 200, pages.changesPage(layout(c, `Versión ${v.number}: cambios`), v, prev, await diffFor(v)));
@@ -481,17 +510,17 @@ export function createApp(deps: AppDeps) {
 
   route("GET", "/api/versions/:n", async (c) => {
     requireAny(c);
-    json(c.res, 200, { version: versionJson(await getVersionOr404(toInt(c.params[0]))) });
+    json(c.res, 200, { version: versionJson(await getVersionOr404(toInt(c.params[0], "La versión"))) });
   });
 
   route("GET", "/api/versions/:n/diff", async (c) => {
     requireAny(c);
-    json(c.res, 200, { diff: await diffFor(await getVersionOr404(toInt(c.params[0]))) });
+    json(c.res, 200, { diff: await diffFor(await getVersionOr404(toInt(c.params[0], "La versión"))) });
   });
 
   route("GET", "/api/versions/:n/pdf", async (c) => {
     requireAny(c);
-    const v = await getVersionOr404(toInt(c.params[0]));
+    const v = await getVersionOr404(toInt(c.params[0], "La versión"));
     const data = await store.get(v.pdf_key);
     if (!data) throw new HttpError(404, "El PDF de esta versión no está en el almacenamiento.");
     send(c.res, 200, data, "application/pdf", {
@@ -507,7 +536,7 @@ export function createApp(deps: AppDeps) {
     const status = c.url.searchParams.get("status");
     let versionNumber: number | undefined;
     if (version === "latest") versionNumber = (await repo.latestVersion())?.number ?? -1;
-    else if (version) versionNumber = toInt(version) ?? -1;
+    else if (version) versionNumber = toInt(version, "La versión");
     if (status && status !== "open" && status !== "resolved" && status !== "all") throw new HttpError(400, "status: open, resolved o all.");
     const threads = await repo.listThreads(viewer, {
       versionNumber,
@@ -528,9 +557,11 @@ export function createApp(deps: AppDeps) {
     checkCsrf(c);
     limited(writeLimiter, `w:${c.session!.idHash}`);
     const b = await readJson(c.req);
-    const v = await getVersionOr404(typeof b.version === "number" ? b.version : null);
-    const page = typeof b.page === "number" && Number.isInteger(b.page) ? b.page : 0;
-    if (page < 1 || page > v.page_count) throw new HttpError(400, "Página fuera del documento.");
+    const v = await getVersionOr404(intField(b.version, "version"));
+    if (typeof b.page !== "number" || !Number.isInteger(b.page) || b.page < 1 || b.page > v.page_count) {
+      throw new HttpError(400, "Página fuera del documento.");
+    }
+    const page = b.page;
     const anchor = b.anchor === "point" ? "point" : b.anchor === "text" ? "text" : null;
     if (!anchor) throw new HttpError(400, "anchor debe ser text o point.");
     const quote = str(b.quote, "La cita", 2000, { required: anchor === "text" });
@@ -568,7 +599,7 @@ export function createApp(deps: AppDeps) {
     const viewer = requireAny(c);
     checkCsrf(c);
     const id = toInt(c.params[0]);
-    const comment = id === null ? null : await repo.getComment(id);
+    const comment = await repo.getComment(id);
     if (!comment || comment.deleted_at) throw new HttpError(404, "No existe ese comentario.");
     await visibleThread(c, comment.thread_id);
     const mine = comment.author_kind === viewer.kind && (viewer.kind === "owner" || comment.director_id === viewer.directorId);
@@ -644,7 +675,7 @@ export function createApp(deps: AppDeps) {
     if ("role" in b) patch.role = str(b.role, "El rol", 100);
     if ("email" in b) patch.email = emailField(b.email);
     if ("notify_versions" in b) patch.notify_versions = b.notify_versions === true;
-    const d = id === null ? null : await repo.updateDirector(id, patch);
+    const d = await repo.updateDirector(id, patch);
     if (!d) throw new HttpError(404, "No existe ese director.");
     json(c.res, 200, { director: directorJson(d) });
   });
@@ -654,7 +685,7 @@ export function createApp(deps: AppDeps) {
     checkCsrf(c);
     const id = toInt(c.params[0]);
     const b = c.req.headers["content-type"]?.startsWith("application/json") ? await readJson(c.req) : {};
-    const r = id === null ? null : await repo.rotateDirector(id);
+    const r = await repo.rotateDirector(id);
     if (!r) throw new HttpError(404, "No existe ese director.");
     log(`director #${r.director.id} link rotated`);
     const mail = await maybeSendLink(r.director, r.secret, b.send_link === true);
@@ -665,7 +696,7 @@ export function createApp(deps: AppDeps) {
     requireOwner(c);
     checkCsrf(c);
     const id = toInt(c.params[0]);
-    const d = id === null ? null : await repo.revokeDirector(id);
+    const d = await repo.revokeDirector(id);
     if (!d) throw new HttpError(404, "No existe ese director.");
     log(`director #${d.id} revoked`);
     json(c.res, 200, { director: directorJson(d) });
@@ -732,8 +763,8 @@ export function createApp(deps: AppDeps) {
       if (!isStatic && url.pathname !== "/healthz" && url.pathname !== "/livez") await authenticate(c);
       await found.handler(c);
     } catch (e) {
-      const err = e instanceof HttpError ? e : null;
-      if (!err) log(`error ${req.method} ${url.pathname}: ${(e as Error).stack ?? e}`);
+      const err = e instanceof HttpError ? e : clientError(e);
+      if (!err) log(`error ${req.method} ${loggablePath(url.pathname)}: ${(e as Error).stack ?? e}`);
       const status = err?.status ?? 500;
       const message = err?.message ?? "Error interno.";
       if (res.headersSent) return res.destroy();

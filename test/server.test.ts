@@ -201,6 +201,16 @@ describe("director links", () => {
     expect(res.headers.getSetCookie()).toEqual([]);
   });
 
+  it("malformed links give 404 (not 500) and the path never reaches the logs", async () => {
+    for (const p of ["/acceso/%E0%A4%A", "/acceso/" + "a".repeat(42) + "%", "/acceso/abc%2Fdef", "/acceso/" + "b".repeat(44)]) {
+      const res = await fetch(s.url + p, { redirect: "manual" });
+      expect(res.status, p).toBe(404);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+    expect(s.logs.join("\n")).not.toContain("/acceso/");
+    expect(s.logs.filter((l) => l.startsWith("error "))).toEqual([]);
+  });
+
   it("directors cannot use owner endpoints", async () => {
     expect((await director.get("/api/directors")).status).toBe(403);
     expect((await director.send("POST", "/api/directors", { name: "x" })).status).toBe(403);
@@ -256,6 +266,24 @@ describe("comments", () => {
       { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x".repeat(10_001) },
     ];
     for (const b of bad) expect((await director.send("POST", "/api/threads", b)).status).toBe(400);
+  });
+
+  it("numeric fields and ids must be integers in range (400, no stack trace in the logs)", async () => {
+    const base = { anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
+    for (const b of [
+      { ...base, version: 1.5, page: 1 },
+      { ...base, version: 1e12, page: 1 },
+      { ...base, version: "1", page: 1 },
+      { ...base, version: 1, page: 1.5 },
+      { ...base, version: 1, page: 1e12 },
+    ]) {
+      expect((await director.send("POST", "/api/threads", b)).status, JSON.stringify(b)).toBe(400);
+    }
+    for (const p of ["/api/threads/abc", "/api/threads/99999999999", "/api/threads?version=abc", "/api/versions/0", "/api/versions/1e3/pdf"]) {
+      expect((await director.get(p)).status, p).toBe(400);
+    }
+    expect((await director.send("POST", "/api/threads/1.5/comments", { body: "x" })).status).toBe(400);
+    expect(s.logs.filter((l) => l.startsWith("error "))).toEqual([]);
   });
 
   it("threads: replies from owner and codirector, edit and soft delete of own comments only", async () => {
