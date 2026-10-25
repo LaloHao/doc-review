@@ -313,20 +313,33 @@ describe("comments", () => {
     expect(s.telegrams.length).toBe(before); // owner replies/edits/deletes don't notify
   });
 
-  it("resolve and reopen", async () => {
-    let res = await director.send("POST", `/api/threads/${threadId}/resolve`);
-    expect(((await res.json()) as { thread: { status: string; resolved_by: string } }).thread).toMatchObject({
+  it("only the opener or the owner can resolve; anyone who sees the thread can reopen", async () => {
+    // threadId was opened by the director.
+    let res = await codirector.send("POST", `/api/threads/${threadId}/resolve`);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toMatch(/Solo quien abrió el hilo/);
+    const asCodir = (await (await codirector.get(`/api/threads/${threadId}`)).json()) as { thread: { can_resolve: boolean } };
+    expect(asCodir.thread.can_resolve).toBe(false);
+    res = await director.send("POST", `/api/threads/${threadId}/resolve`);
+    expect(((await res.json()) as { thread: { status: string; resolved_by: string; can_resolve: boolean } }).thread).toMatchObject({
       status: "resolved",
       resolved_by: "Dra. Ana Torres Ruiz",
+      can_resolve: true,
     });
     res = await owner(`/api/threads?status=open`);
     expect(((await res.json()) as { threads: unknown[] }).threads).toHaveLength(0);
+    // The codirector can't resolve it, but can reopen it.
+    res = await codirector.send("POST", `/api/threads/${threadId}/reopen`);
+    expect(((await res.json()) as { thread: { status: string; resolved_by: string | null } }).thread).toMatchObject({ status: "open", resolved_by: null });
+    // The owner can always resolve.
+    res = await owner(`/api/threads/${threadId}/resolve`, { method: "POST" });
+    expect(((await res.json()) as { thread: { status: string } }).thread.status).toBe("resolved");
     res = await owner(`/api/threads/${threadId}/reopen`, { method: "POST" });
     expect(((await res.json()) as { thread: { status: string } }).thread.status).toBe("open");
   });
 
-  it("visibility setting: 'own' hides other directors' threads", async () => {
-    const res = await codirector.send("POST", "/api/threads", {
+  it("visibility setting: 'own' hides other directors' threads and comments", async () => {
+    let res = await codirector.send("POST", "/api/threads", {
       version: 1,
       page: 4,
       anchor: "point",
@@ -334,14 +347,38 @@ describe("comments", () => {
       body: "Falta una figura aquí.",
     });
     const codirThread = ((await res.json()) as { thread: { id: number } }).thread.id;
-    const count = async (b: Browser) => ((await (await b.get("/api/threads?status=all")).json()) as { threads: unknown[] }).threads.length;
-    expect(await count(director)).toBe(2);
+    // An owner thread where both directors reply.
+    res = await ownerJson("POST", "/api/threads", { version: 1, page: 5, anchor: "point", rects: [{ x: 0.2, y: 0.2, w: 0, h: 0 }], body: "¿Les parece bien esta conclusión?" });
+    const ownerThread = ((await res.json()) as { thread: { id: number } }).thread.id;
+    await codirector.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del codirector" });
+    await director.send("POST", `/api/threads/${ownerThread}/comments`, { body: "Opinión del director" });
+    // Legacy row (resolved before resolved_by_kind existed) by the codirector.
+    await s.repo.db.query("update threads set status = 'resolved', resolved_by = $2, resolved_at = now() where id = $1", [ownerThread, "Dr. Luis Méndez Ortega"]);
+
+    const list = async (b: Browser) =>
+      ((await (await b.get("/api/threads?status=all")).json()) as {
+        threads: { id: number; resolved_by: string | null; comments: { author: { name: string }; body: string | null }[] }[];
+      }).threads;
+    expect((await list(director)).length).toBe(3);
     expect((await ownerJson("PUT", "/api/settings", { comments_visibility: "own" })).status).toBe(200);
-    expect(await count(director)).toBe(1);
-    expect(await count(codirector)).toBe(1);
+    const mine = await list(director);
+    expect(mine.map((t) => t.id).sort()).toEqual([threadId, ownerThread].sort());
+    const ot = mine.find((t) => t.id === ownerThread)!;
+    expect(ot.comments.map((c) => c.author.name)).toEqual(["Eduardo Ejemplo", "Dra. Ana Torres Ruiz"]);
+    expect(JSON.stringify(mine)).not.toContain("Opinión del codirector");
+    expect(JSON.stringify(mine)).not.toContain("Méndez");
+    expect(ot.resolved_by).toBeNull();
+    const single = (await (await director.get(`/api/threads/${ownerThread}`)).json()) as { thread: { comments: unknown[] } };
+    expect(single.thread.comments).toHaveLength(2);
+    expect((await list(codirector)).map((t) => t.id).sort()).toEqual([codirThread, ownerThread].sort());
     expect((await director.send("POST", `/api/threads/${codirThread}/comments`, { body: "x" })).status).toBe(404);
+    // The owner still sees everything.
+    const all = (await (await owner(`/api/threads/${ownerThread}`)).json()) as { thread: { comments: unknown[]; resolved_by: string } };
+    expect(all.thread.comments).toHaveLength(3);
+    expect(all.thread.resolved_by).toBe("Dr. Luis Méndez Ortega");
     await ownerJson("PUT", "/api/settings", { comments_visibility: "all" });
-    expect(await count(director)).toBe(2);
+    expect((await list(director)).length).toBe(3);
+    await owner(`/api/threads/${ownerThread}/reopen`, { method: "POST" });
   });
 
   it("serves the PDF only with a session", async () => {
@@ -385,7 +422,7 @@ describe("versions and changes", () => {
   it("comments stay with the version they were made on", async () => {
     const v1 = (await (await owner("/api/threads?version=1&status=all")).json()) as { threads: unknown[] };
     const v2 = (await (await owner("/api/threads?version=latest&status=all")).json()) as { threads: unknown[] };
-    expect(v1.threads.length).toBe(2);
+    expect(v1.threads.length).toBe(3);
     expect(v2.threads.length).toBe(0);
   });
 });

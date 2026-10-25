@@ -96,4 +96,13 @@ create table digest_runs (
 );
 `,
   },
+  {
+    // Who resolved a thread, as ids: the visibility setting can then hide the
+    // name of another director, and resolve permissions can be checked.
+    name: "002_resolved_by",
+    sql: `
+alter table threads add column resolved_by_kind text check (resolved_by_kind in ('owner', 'director'));
+alter table threads add column resolved_by_director_id integer references directors(id);
+`,
+  },
 ];

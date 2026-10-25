@@ -78,6 +78,8 @@ export interface ThreadOut {
   author: { kind: AuthorKind; name: string; director_id: number | null };
   created_at: string;
   updated_at: string;
+  /** The viewer may mark it resolved: the owner, or the director who opened it. */
+  can_resolve: boolean;
   comments: CommentOut[];
 }
 
@@ -365,11 +367,12 @@ export class Repo {
     await this.db.query("update comments set deleted_at = coalesce(deleted_at, now()) where id = $1", [id]);
   }
 
-  async setStatus(threadId: number, status: "open" | "resolved", by: string): Promise<void> {
+  async setStatus(threadId: number, status: "open" | "resolved", by: Viewer & { name: string }): Promise<void> {
+    const resolved = status === "resolved";
     await this.db.query(
-      `update threads set status = $2, resolved_at = case when $2 = 'resolved' then now() else null end,
-       resolved_by = case when $2 = 'resolved' then $3 else null end, updated_at = now() where id = $1`,
-      [threadId, status, by],
+      `update threads set status = $2, resolved_at = ${resolved ? "now()" : "null"},
+       resolved_by = $3, resolved_by_kind = $4, resolved_by_director_id = $5, updated_at = now() where id = $1`,
+      resolved ? [threadId, status, by.name, by.kind, by.directorId] : [threadId, status, null, null, null],
     );
   }
 
@@ -387,9 +390,10 @@ export class Repo {
     if (filter.versionNumber !== undefined) where.push(`v.number = ${p(filter.versionNumber)}`);
     if (filter.status) where.push(`t.status = ${p(filter.status)}`);
     if (filter.threadId !== undefined) where.push(`t.id = ${p(filter.threadId)}`);
-    if (viewer.kind === "director" && (await this.visibility()) === "own") {
-      where.push(`(t.author_kind = 'owner' or t.director_id = ${p(viewer.directorId)})`);
-    }
+    // "own": a director sees the threads opened by the owner or by them, and in
+    // them only the owner's comments and their own.
+    const own = viewer.kind === "director" && (await this.visibility()) === "own";
+    if (own) where.push(`(t.author_kind = 'owner' or t.director_id = ${p(viewer.directorId)})`);
     const threads = await this.db.query<{
       id: number;
       number: number;
@@ -400,6 +404,8 @@ export class Repo {
       status: "open" | "resolved";
       resolved_at: Date | null;
       resolved_by: string | null;
+      resolved_by_kind: AuthorKind | null;
+      resolved_by_director_id: number | null;
       author_kind: AuthorKind;
       director_id: number | null;
       created_at: Date;
@@ -422,8 +428,9 @@ export class Repo {
       edited_at: Date | null;
       deleted_at: Date | null;
     }>(
-      "select * from comments where thread_id = any($1::int[]) order by created_at, id",
-      [threads.map((t) => t.id)],
+      `select * from comments where thread_id = any($1::int[])
+       ${own ? "and (author_kind = 'owner' or director_id = $2)" : ""} order by created_at, id`,
+      own ? [threads.map((t) => t.id), viewer.directorId] : [threads.map((t) => t.id)],
     );
     const names = new Map((await this.listDirectors()).map((d) => [d.id, d.name]));
     const author = (kind: AuthorKind, id: number | null) => ({
@@ -448,6 +455,12 @@ export class Repo {
       byThread.set(c.thread_id, list);
     }
     const since = filter.since?.getTime();
+    const resolvedBy = (t: (typeof threads)[number]): string | null => {
+      if (!t.resolved_by || !own) return t.resolved_by;
+      if (t.resolved_by_kind === "owner") return t.resolved_by;
+      if (t.resolved_by_kind === "director") return t.resolved_by_director_id === viewer.directorId ? t.resolved_by : null;
+      return t.resolved_by === this.ownerName ? t.resolved_by : null; // before 002_resolved_by
+    };
     return threads
       .map((t): ThreadOut => {
         const ch = chapterOfPage(t.chapter_pages ?? [], t.page);
@@ -460,11 +473,13 @@ export class Repo {
           rects: t.rects,
           status: t.status,
           resolved_at: iso(t.resolved_at),
-          resolved_by: t.resolved_by,
+          resolved_by: resolvedBy(t),
           chapter: ch ? { id: ch.id, title: ch.title } : null,
           author: author(t.author_kind, t.director_id),
           created_at: iso(t.created_at)!,
           updated_at: iso(t.updated_at)!,
+          can_resolve:
+            viewer.kind === "owner" || (t.author_kind === "director" && t.director_id === viewer.directorId),
           comments: byThread.get(t.id) ?? [],
         };
       })

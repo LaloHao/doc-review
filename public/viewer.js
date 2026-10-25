@@ -338,12 +338,16 @@ function threadNode(t) {
     if (!reply.value.trim()) return;
     await mutate(() => api("POST", `/api/threads/${t.id}/comments`, { body: reply.value }));
   });
-  const toggle = el("button", {
-    type: "button",
-    class: "secondary small-btn",
-    text: t.status === "open" ? "Marcar resuelto" : "Reabrir",
-    onclick: () => mutate(() => api("POST", `/api/threads/${t.id}/${t.status === "open" ? "resolve" : "reopen"}`)),
-  });
+  // Only the owner and the director who opened a thread may resolve it; anyone may reopen.
+  const toggle =
+    t.status === "open" && !t.can_resolve
+      ? null
+      : el("button", {
+          type: "button",
+          class: "secondary small-btn",
+          text: t.status === "open" ? "Marcar resuelto" : "Reabrir",
+          onclick: () => mutate(() => api("POST", `/api/threads/${t.id}/${t.status === "open" ? "resolve" : "reopen"}`)),
+        });
   const node = el(
     "article",
     { class: `thread ${t.status}`, id: `hilo-${t.id}`, tabindex: "-1" },
@@ -357,7 +361,7 @@ function threadNode(t) {
     t.quote ? el("blockquote", { class: "quote", text: t.quote }) : el("p", { class: "muted small", text: "Comentario sobre un punto de la página." }),
     ...t.comments.map((c) => commentNode(t, c)),
     t.status === "resolved" && t.resolved_by ? el("p", { class: "muted small", text: `Resuelto por ${t.resolved_by}` }) : null,
-    el("div", { class: "thread-actions" }, toggle),
+    toggle ? el("div", { class: "thread-actions" }, toggle) : null,
     replyForm,
   );
   return node;

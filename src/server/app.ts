@@ -585,11 +585,16 @@ export function createApp(deps: AppDeps) {
     json(c.res, 201, { thread: await visibleThread(c, t.id), comment_id: commentId });
   });
 
+  // Resolving: the owner, or the director who opened the thread. Reopening:
+  // anyone who can see it.
   const setStatus = (status: "open" | "resolved") => async (c: Ctx) => {
-    requireAny(c);
+    const viewer = requireAny(c);
     checkCsrf(c);
     const t = await visibleThread(c, toInt(c.params[0]));
-    await repo.setStatus(t.id, status, whoName(c.session!));
+    if (status === "resolved" && !t.can_resolve) {
+      throw new HttpError(403, "Solo quien abrió el hilo o el autor de la tesis pueden marcarlo como resuelto.");
+    }
+    await repo.setStatus(t.id, status, { ...viewer, name: whoName(c.session!) });
     json(c.res, 200, { thread: await visibleThread(c, t.id) });
   };
   route("POST", "/api/threads/:id/resolve", setStatus("resolved"));

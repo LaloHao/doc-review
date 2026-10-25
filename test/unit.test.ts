@@ -115,7 +115,7 @@ describe("untrusted text", () => {
     const n = new Notifier({ publicUrl: "https://r.example", thesisTitle: async () => "T", telegram: { send: async (t) => void tg.push(t) }, mailer: null, ownerEmail: "", instant: true, log: () => undefined });
     const author = { kind: "director" as const, name: evil, director_id: 1 };
     await n.commentCreated(
-      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, chapter: { id: "c", title: evil }, author, created_at: "", updated_at: "",
+      { id: 7, version: 1, page: 1, anchor: "point", quote: evil, rects: [], status: "open", resolved_at: null, resolved_by: null, chapter: { id: "c", title: evil }, author, created_at: "", updated_at: "", can_resolve: false,
         comments: [{ id: 1, author, body: evil, body_html: "", created_at: "", edited_at: null, deleted: false, mine: false }] },
       1,
     );
@@ -226,6 +226,7 @@ describe("notifications", () => {
     author: { kind: "director", name: "Dr. A", director_id: 1 },
     created_at: "2026-10-24T10:00:00Z",
     updated_at: "2026-10-24T10:00:00Z",
+    can_resolve: false,
     comments: [
       { id: 1, author: { kind: "director", name: "Dr. A", director_id: 1 }, body: "Revise esto.", body_html: "", created_at: "2026-10-24T10:00:00Z", edited_at: null, deleted: false, mine: false },
     ],
