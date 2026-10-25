@@ -15,3 +15,6 @@ export function sampleProgress(v2?: boolean): {
   total_words: number;
   sections: { id: string; title: string; words: number; goal: number | null; status: string | null }[];
 };
+export const REPORT_TITLE: string;
+export function sampleReport(v2?: boolean): Uint8Array;
+export function sampleReportProgress(v2?: boolean): ReturnType<typeof sampleProgress>;

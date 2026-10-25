@@ -69,7 +69,7 @@ export function ownerDashboard(
       <td><select data-action="notify-replies" data-id="${p.id}" aria-label="${tr.e("people.replies_for", { name: p.name })}">
           ${REPLY_NOTIFY.map((v) => `<option value="${v}"${p.notify_replies === v ? " selected" : ""}>${tr.e(REPLY_KEY[v])}</option>`).join("")}
         </select>
-        <label class="check small"><input type="checkbox" data-action="notify-versions" data-id="${p.id}"${p.notify_versions ? " checked" : ""}> ${tr.e("people.versions")}</label></td>
+        <div><label class="check small"><input type="checkbox" data-action="notify-versions" data-id="${p.id}"${p.notify_versions ? " checked" : ""}> ${tr.e("people.versions")}</label></div></td>
       <td class="small">${p.last_seen_at ? esc(tr.date(p.last_seen_at)) : `<span class="muted">${tr.e("people.never")}</span>`}</td>
       <td class="actions"><button type="button" class="secondary" data-action="edit-person" data-id="${p.id}" data-name="${esc(p.name)}" data-email="${esc(p.email ?? "")}">${tr.e("people.edit")}</button></td>
     </tr>`;

@@ -87,7 +87,7 @@ export const en = {
   "people.documents": "Documents",
   "people.no_documents": "None",
   "people.notifications": "Reply emails",
-  "people.versions": "new versions",
+  "people.versions": "emails about new versions",
   "people.replies_for": "Reply emails for {name}",
   "people.last_visit": "Last visit",
   "people.never": "never",

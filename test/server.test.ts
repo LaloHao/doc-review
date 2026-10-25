@@ -459,6 +459,15 @@ describe("comments", () => {
     expect(JSON.stringify(mine)).not.toContain("Méndez");
     expect(ot.resolved_by).toBe("Eduardo Ejemplo");
     expect((await ana.json<{ thread: { comments: unknown[] } }>(`/api/threads/${ownerThread}`)).thread.comments).toHaveLength(2);
+    // Counts follow the visibility too, and reviewers don't learn how many others there are.
+    const extra = ((await (await luis.send("POST", "/api/documents/thesis/threads", { version: 1, page: 2, anchor: "point", rects: [{ x: 0.1, y: 0.1, w: 0, h: 0 }], body: "Otra" })).json()) as { thread: { id: number } }).thread.id;
+    const { documents } = await ana.json<{ documents: Record<string, unknown>[] }>("/api/documents");
+    const thesisDoc = documents.find((d) => d.slug === "thesis")!;
+    expect(thesisDoc.open_threads).toBe(1);
+    expect("reviewers" in thesisDoc).toBe(false);
+    expect(((await (await s.owner("/api/documents/thesis")).json()) as { document: { open_threads: number; reviewers: number } }).document).toMatchObject({ open_threads: 2, reviewers: 2 });
+    await s.repo.db.query("delete from comments where thread_id = $1", [extra]);
+    await s.repo.db.query("delete from threads where id = $1", [extra]);
     const his = await list(luis);
     expect(his.map((t) => t.id).sort()).toEqual([luisThread, ownerThread].sort());
     expect(his.find((t) => t.id === luisThread)!.resolved_by).toBe(LUIS);

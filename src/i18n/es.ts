@@ -82,7 +82,7 @@ export const es: Record<keyof typeof en, string> = {
   "people.documents": "Documentos",
   "people.no_documents": "Ninguno",
   "people.notifications": "Correos de respuestas",
-  "people.versions": "versiones nuevas",
+  "people.versions": "correos de versiones nuevas",
   "people.replies_for": "Correos de respuestas de {name}",
   "people.last_visit": "Última visita",
   "people.never": "nunca",

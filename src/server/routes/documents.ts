@@ -26,7 +26,7 @@ export function documentJson(app: App, d: Document, s?: DocumentSummary, invitat
           latest_version: s.latest ? { number: s.latest.number, created_at: new Date(s.latest.created_at).toISOString(), total_words: s.latest.progress?.total_words ?? null } : null,
           versions: s.versions,
           open_threads: s.open_threads,
-          reviewers: s.reviewers,
+          ...(s.reviewers >= 0 ? { reviewers: s.reviewers } : {}),
         }
       : {}),
     ...(invitation ? { role: invitation.role } : {}),
@@ -36,6 +36,21 @@ export function documentJson(app: App, d: Document, s?: DocumentSummary, invitat
 export function documentRoutes(r: Router<Ctx>, app: App): void {
   const { repo, config, notifier } = app;
 
+  /**
+   * Summaries as a reviewer sees them: open threads they can see (the
+   * document's visibility applies), and no count of the other reviewers.
+   */
+  const reviewerSummaries = async (personId: number, docs: Document[]): Promise<DocumentSummary[]> => {
+    const all = await repo.documentSummaries(docs);
+    return Promise.all(
+      all.map(async (s) => ({
+        ...s,
+        open_threads: (await repo.listThreads(s.document, { kind: "reviewer", personId }, { status: "open" })).length,
+        reviewers: -1,
+      })),
+    );
+  };
+
   r.get("/", async (c) => {
     const tr = translator(c.lang);
     if (!c.session) return html(c.res, 200, landingPage(tr));
@@ -44,7 +59,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
       const current = invitations.filter((i) => !i.document.archived_at);
       // One document: straight to it.
       if (current.length === 1 && invitations.length === 1) return redirect(c.res, `/d/${current[0]!.document.slug}`);
-      const summaries = await repo.documentSummaries(invitations.map((i) => i.document));
+      const summaries = await reviewerSummaries(c.session.person!.id, invitations.map((i) => i.document));
       return html(
         c.res,
         200,
@@ -103,7 +118,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
       return json(c.res, 200, { documents: summaries.map((s) => documentJson(app, s.document, s)) });
     }
     const invitations = await repo.invitationsOfPerson(viewer.personId!, { activeOnly: true });
-    const summaries = await repo.documentSummaries(invitations.map((i) => i.document));
+    const summaries = await reviewerSummaries(viewer.personId!, invitations.map((i) => i.document));
     json(c.res, 200, { documents: invitations.map((i, k) => documentJson(app, i.document, summaries[k], i)) });
   });
 
@@ -125,7 +140,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
 
   r.get("/api/documents/:slug", async (c) => {
     const { doc, invitation } = await app.documentFor(c, c.params[0]);
-    const [s] = await repo.documentSummaries([doc]);
+    const [s] = invitation ? await reviewerSummaries(invitation.person_id, [doc]) : await repo.documentSummaries([doc]);
     json(c.res, 200, { document: documentJson(app, doc, s, invitation) });
   });
 

@@ -1,6 +1,7 @@
 // Minimal PDF writer for tests and the local demo: text pages in Helvetica
 // (WinAnsi, so Spanish accents work), with automatic line wrapping.
-// Usage: node test/fixtures/make-pdf.mjs out.pdf [v2]
+// Usage: node test/fixtures/make-pdf.mjs out.pdf [v2] [report]
+//   writes out.pdf, out.progress.json and (for the thesis) out.avance.json
 
 import { writeFileSync } from "node:fs";
 
@@ -148,13 +149,63 @@ export function sampleAvance(v2 = false) {
   };
 }
 
+export const REPORT_TITLE = "Incident review: the October outage of the payments API";
+
+/** A small English report (for the English screenshots); v2 changes some sentences. */
+export function sampleReport(v2 = false) {
+  const summary = [
+    "On October 14 the payments API returned errors for 47 minutes.",
+    "About 3,200 card payments failed and had to be retried by the customers.",
+    v2
+      ? "The root cause was a connection pool that was too small for the new batch job, combined with a retry storm."
+      : "The root cause was a connection pool that was too small for the new batch job.",
+    "No data was lost and no payment was charged twice.",
+  ];
+  const timeline = [
+    "At 09:12 the batch job started and opened two hundred connections to the database.",
+    "At 09:15 the API began to time out and the on-call engineer was paged.",
+    "At 09:59 the batch job was stopped and the API recovered within two minutes.",
+  ];
+  const actions = [
+    "Give the batch job its own connection pool with a hard limit.",
+    "Add an alert on the database connection count.",
+    v2 ? "Rehearse the rollback of batch jobs every quarter, starting in December." : "Rehearse the rollback of batch jobs.",
+  ];
+  return makePdf([
+    { heading: "ACME Payments", text: REPORT_TITLE + "\nPrepared for the ACME operations team" },
+    { heading: "Contents", text: "1. Summary 3\n2. Timeline 4\n3. Actions 5" },
+    { heading: "1\nSummary", text: summary.join(" ") },
+    { heading: "2\nTimeline", text: timeline.join(" ") },
+    { heading: "3\nActions", text: actions.join(" ") },
+  ]);
+}
+
+export function sampleReportProgress(v2 = false) {
+  return {
+    schema: 1,
+    title: REPORT_TITLE,
+    generated_at: new Date(v2 ? "2026-10-22T18:00:00Z" : "2026-10-16T18:00:00Z").toISOString(),
+    total_words: v2 ? 1210 : 1050,
+    sections: [
+      { id: "summary", title: "Summary", words: v2 ? 420 : 380, goal: 400, status: v2 ? "done" : "review" },
+      { id: "timeline", title: "Timeline", words: 450, goal: 500, status: "review" },
+      { id: "actions", title: "Actions", words: v2 ? 340 : 220, goal: 300, status: "draft" },
+    ],
+  };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [out, which] = process.argv.slice(2);
+  const [out, ...flags] = process.argv.slice(2);
   if (!out) {
-    console.error("usage: node make-pdf.mjs out.pdf [v2]");
+    console.error("usage: node make-pdf.mjs out.pdf [v2] [report]");
     process.exit(2);
   }
-  const v2 = which === "v2";
+  const v2 = flags.includes("v2");
+  if (flags.includes("report")) {
+    writeFileSync(out, sampleReport(v2));
+    writeFileSync(out.replace(/\.pdf$/, ".progress.json"), JSON.stringify(sampleReportProgress(v2), null, 2));
+    process.exit(0);
+  }
   writeFileSync(out, sampleThesis(v2));
   writeFileSync(out.replace(/\.pdf$/, ".progress.json"), JSON.stringify(sampleProgress(v2), null, 2));
   writeFileSync(out.replace(/\.pdf$/, ".avance.json"), JSON.stringify(sampleAvance(v2), null, 2));
