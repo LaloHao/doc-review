@@ -11,6 +11,23 @@ export interface ClientConfig {
   token: string;
 }
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * The server URL must be https (the owner token travels in every request);
+ * plain http only for a server on this machine.
+ */
+export function checkServerUrl(url: string): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error(`URL del servidor no válida (debe empezar con https://): ${url}`);
+  }
+  if (u.protocol === "https:" || (u.protocol === "http:" && LOCAL_HOSTS.has(u.hostname))) return url.replace(/\/+$/, "");
+  throw new Error(`La URL del servidor debe usar https:// (http solo para localhost): ${url}`);
+}
+
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.REVISION_TESIS_CONFIG) return env.REVISION_TESIS_CONFIG;
   const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -31,7 +48,7 @@ export async function loadClientConfig(path = configPath()): Promise<ClientConfi
   if (typeof raw.url !== "string" || typeof raw.token !== "string" || !raw.url || !raw.token) {
     throw new Error(`${path} debe tener "url" y "token".`);
   }
-  return { url: raw.url.replace(/\/+$/, ""), token: raw.token };
+  return { url: checkServerUrl(raw.url), token: raw.token };
 }
 
 export class ApiError extends Error {
@@ -44,10 +61,14 @@ export class ApiError extends Error {
 }
 
 export class Client {
+  private readonly cfg: ClientConfig;
+
   constructor(
-    private readonly cfg: ClientConfig,
+    cfg: ClientConfig,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    this.cfg = { ...cfg, url: checkServerUrl(cfg.url) };
+  }
 
   async request<T>(method: string, path: string, body?: BodyInit, type?: string): Promise<T> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.cfg.token}`, accept: "application/json" };

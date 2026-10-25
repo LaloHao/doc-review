@@ -122,7 +122,19 @@ look different from what it is in a buffer, the echo area or Flymake."
            (token (alist-get 'token json)))
       (unless (and (stringp url) (stringp token) (> (length url) 0) (> (length token) 0))
         (user-error "%s debe tener \"url\" y \"token\"" file))
+      (revision-tesis--check-url url)
       (cons (string-trim-right url "/+") token))))
+
+(defun revision-tesis--check-url (url)
+  "Signal a `user-error' unless URL is https, or http to this machine.
+The owner token goes in every request: it must never travel in clear text."
+  (let* ((u (url-generic-parse-url url))
+         (type (url-type u))
+         (host (url-host u)))
+    (unless (or (equal type "https")
+                (and (equal type "http")
+                     (member host '("localhost" "127.0.0.1" "::1" "[::1]"))))
+      (user-error "La URL del servidor debe usar https:// (http solo para localhost): %s" url))))
 
 (defun revision-tesis--parse-json (string)
   "Parse STRING as JSON: objects → alists, arrays → lists, null → nil."
@@ -616,20 +628,36 @@ The file named after the thread's chapter id is tried first."
           (url-retrieve
            (concat (car cfg) "/api/threads?status=open")
            (lambda (status)
-             (setq revision-tesis--fetching nil)
-             (unless (plist-get status :error)
-               (goto-char (point-min))
-               (when (re-search-forward "\r?\n\r?\n" nil t)
-                 (let ((data (ignore-errors
-                               (revision-tesis--parse-json
-                                (decode-coding-string
-                                 (buffer-substring-no-properties (point) (point-max)) 'utf-8)))))
-                   (when data
-                     (setq revision-tesis--threads (alist-get 'threads data)
-                           revision-tesis--fetched t)
-                     (revision-tesis--refresh-flymake)))))
-             (kill-buffer (current-buffer)))
+             (unwind-protect (revision-tesis--fetch-async-done status)
+               (kill-buffer (current-buffer))))
            nil t t))))))
+
+(defun revision-tesis--fetch-async-done (status)
+  "Handle the response of `revision-tesis--fetch-async' (current buffer).
+STATUS is url.el's status plist.  Errors (a wrong token, the server down)
+are reported in the echo area instead of silently showing no notes; they
+are not retried on every Flymake run: `revision-tesis-actualizar' asks again."
+  (setq revision-tesis--fetching nil)
+  (let* ((code (bound-and-true-p url-http-response-status))
+         (err (plist-get status :error))
+         (body (progn (goto-char (point-min))
+                      (and (re-search-forward "\r?\n\r?\n" nil t)
+                           (decode-coding-string
+                            (buffer-substring-no-properties (point) (point-max)) 'utf-8))))
+         (data (and body (ignore-errors (revision-tesis--parse-json body)))))
+    (if (or err (null code) (>= code 400))
+        (progn
+          (setq revision-tesis--threads nil revision-tesis--fetched t)
+          (message "revision-tesis: no se pudieron descargar los comentarios: %s (M-x revision-tesis-actualizar para reintentar)"
+                   (revision-tesis--sanitize
+                    (or (let ((m (and (consp data) (alist-get 'error data)))) (and (stringp m) m))
+                        (and code (format "HTTP %s" code))
+                        (and err (error-message-string err))
+                        "sin respuesta"))))
+      (when (consp data)
+        (setq revision-tesis--threads (alist-get 'threads data)
+              revision-tesis--fetched t)
+        (revision-tesis--refresh-flymake)))))
 
 (defun revision-tesis--refresh-flymake ()
   "Rerun Flymake in buffers with `revision-tesis-mode'."

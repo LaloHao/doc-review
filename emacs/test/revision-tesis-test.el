@@ -142,6 +142,46 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
           (should (equal (revision-tesis--config) '("https://r.example" . "t"))))
       (delete-file f))))
 
+(ert-deftest revision-tesis-test-config-requires-https ()
+  (dolist (case '(("http://r.example" . nil) ("ftp://r.example" . nil)
+                  ("https://r.example" . t) ("http://localhost:8080" . t)
+                  ("http://127.0.0.1:8099/" . t) ("http://[::1]:8080" . t)))
+    (let ((f (make-temp-file "rt-config" nil ".json"
+                             (format "{\"url\": \"%s\", \"token\": \"t\"}" (car case)))))
+      (unwind-protect
+          (let ((revision-tesis-config-file f))
+            (set-file-modes f #o600)
+            (if (cdr case)
+                (should (revision-tesis--config))
+              (should-error (revision-tesis--config) :type 'user-error)))
+        (delete-file f)))))
+
+(ert-deftest revision-tesis-test-async-fetch-reports-http-errors ()
+  (let ((revision-tesis--fetching t) (revision-tesis--fetched nil)
+        (revision-tesis--threads '(old)) messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (with-temp-buffer
+        (insert "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\": \"Token no v\u00e1lido.\"}")
+        (setq-local url-http-response-status 401)
+        (revision-tesis--fetch-async-done '(:error (error http 401))))
+      (should-not revision-tesis--fetching)
+      (should revision-tesis--fetched)
+      (should-not revision-tesis--threads)
+      (should (string-match-p "no se pudieron descargar los comentarios: Token no válido" (car messages)))
+      ;; Connection refused: no HTTP status at all.
+      (with-temp-buffer
+        (revision-tesis--fetch-async-done '(:error (file-error "make client process failed" "Connection refused"))))
+      (should (string-match-p "Connection refused" (car messages))))
+    ;; Success fills the cache.
+    (let ((revision-tesis--fetched nil))
+      (with-temp-buffer
+        (insert "HTTP/1.1 200 OK\r\n\r\n{\"threads\": [{\"id\": 3}]}")
+        (setq-local url-http-response-status 200)
+        (revision-tesis--fetch-async-done nil))
+      (should revision-tesis--fetched)
+      (should (equal (alist-get 'id (car revision-tesis--threads)) 3)))))
+
 (ert-deftest revision-tesis-test-handle-response ()
   (should (equal (revision-tesis--handle-response 200 "{\"a\": [1, null]}") '((a 1 nil))))
   (let ((err (should-error (revision-tesis--handle-response 403 "{\"error\": \"Solo el autor\"}")

@@ -193,6 +193,17 @@ describe("misc", () => {
     t = 1001;
     expect(rl.hit("a")).toBe(0);
   });
+  it("the CLI refuses a server URL without https (except this machine)", async () => {
+    const { checkServerUrl, Client } = await import("../src/client.js");
+    expect(checkServerUrl("https://tesis.example/")).toBe("https://tesis.example");
+    expect(checkServerUrl("http://localhost:8080")).toBe("http://localhost:8080");
+    expect(checkServerUrl("http://127.0.0.1:8099")).toBe("http://127.0.0.1:8099");
+    expect(checkServerUrl("http://[::1]:8080")).toBe("http://[::1]:8080");
+    for (const bad of ["http://tesis.example", "http://localhost.evil.example", "ftp://x", "tesis.example"]) {
+      expect(() => checkServerUrl(bad), bad).toThrow(/https/);
+    }
+    expect(() => new Client({ url: "http://tesis.example", token: "t" })).toThrow(/https/);
+  });
   it("buckets IPv6 clients per /64 and IPv4-mapped addresses as IPv4", () => {
     expect(ipBucket("203.0.113.7")).toBe("203.0.113.7");
     expect(ipBucket("::ffff:203.0.113.7")).toBe("203.0.113.7");
