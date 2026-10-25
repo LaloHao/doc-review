@@ -1,4 +1,4 @@
-{{- if include "revision-tesis.migrationJob" . }}
+{{- if include "doc-review.migrationJob" . }}
 # Runs the migrations with the admin role before the app is installed or
 # upgraded. The admin DSN lives only in migrations.adminSecretName: the app
 # pod never sees it.
@@ -7,7 +7,7 @@ kind: Job
 metadata:
   name: {{ .Release.Name }}-migrate
   labels:
-    {{- include "revision-tesis.labels" . | nindent 4 }}
+    {{- include "doc-review.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
@@ -20,7 +20,7 @@ spec:
     metadata:
       labels:
         # Not the app's selector labels: the Service must never route to it.
-        app.kubernetes.io/name: revision-tesis-migrate
+        app.kubernetes.io/name: doc-review-migrate
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       restartPolicy: Never
@@ -30,10 +30,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- include "revision-tesis.podSecurityContext" . | nindent 8 }}
+        {{- include "doc-review.podSecurityContext" . | nindent 8 }}
       containers:
         - name: migrate
-          image: {{ include "revision-tesis.image" . | quote }}
+          image: {{ include "doc-review.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["migrate"]
           env:
@@ -43,7 +43,7 @@ spec:
                   name: {{ .Values.migrations.adminSecretName }}
                   key: {{ .Values.migrations.adminSecretKey }}
           securityContext:
-            {{- include "revision-tesis.containerSecurityContext" . | nindent 12 }}
+            {{- include "doc-review.containerSecurityContext" . | nindent 12 }}
           resources:
             requests:
               cpu: 10m

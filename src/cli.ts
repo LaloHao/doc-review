@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// revision-tesis: server and owner CLI.
+// doc-review: server and owner CLI.
 
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
@@ -11,23 +11,23 @@ import { newOwnerToken, sha256Hex } from "./server/crypto.js";
 import { fmtThread, oneLine } from "./format.js";
 import { startServer } from "./server/main.js";
 
-const HELP = `revision-tesis — comentarios de los directores sobre el PDF de la tesis
+const HELP = `doc-review — comentarios de los directores sobre el PDF de la tesis
 
 Servidor:
-  revision-tesis serve                 inicia el servidor (configuración por variables de entorno)
-  revision-tesis migrate               aplica las migraciones (DATABASE_ADMIN_URL o DATABASE_URL)
-  revision-tesis gen-token             genera un token de autor y su SHA-256 (OWNER_TOKEN_SHA256)
+  doc-review serve                 inicia el servidor (configuración por variables de entorno)
+  doc-review migrate               aplica las migraciones (DATABASE_ADMIN_URL o DATABASE_URL)
+  doc-review gen-token             genera un token de autor y su SHA-256 (OWNER_TOKEN_SHA256)
 
-Autor (usa ~/.config/revision-tesis/config.json: {"url", "token"}, modo 0600):
-  revision-tesis publish tesis.pdf avance.json [-m "nota"]
-  revision-tesis comments [--version N|latest] [--all] [--json]
-  revision-tesis avance tesis.org [-o avance.json]   genera avance.json desde los #+INCLUDE
-  revision-tesis directors list
-  revision-tesis directors add "Nombre" [--role R] [--email E] [--notify] [--replies instant|daily|never] [--send-link]
-  revision-tesis directors replies ID instant|daily|never   avisos de respuestas por correo
-  revision-tesis directors rotate ID [--send-link]
-  revision-tesis directors revoke ID
-  revision-tesis sessions close-all [--directors]    cierra tus sesiones web (y las de los directores)
+Autor (usa ~/.config/doc-review/config.json: {"url", "token"}, modo 0600):
+  doc-review publish tesis.pdf avance.json [-m "nota"]
+  doc-review comments [--version N|latest] [--all] [--json]
+  doc-review avance tesis.org [-o avance.json]   genera avance.json desde los #+INCLUDE
+  doc-review directors list
+  doc-review directors add "Nombre" [--role R] [--email E] [--notify] [--replies instant|daily|never] [--send-link]
+  doc-review directors replies ID instant|daily|never   avisos de respuestas por correo
+  doc-review directors rotate ID [--send-link]
+  doc-review directors revoke ID
+  doc-review sessions close-all [--directors]    cierra tus sesiones web (y las de los directores)
 `;
 
 async function main(argv: string[]): Promise<number> {
@@ -62,7 +62,7 @@ async function main(argv: string[]): Promise<number> {
 
     case "gen-token": {
       const token = newOwnerToken();
-      console.log(`token (en ~/.config/revision-tesis/config.json):\n  ${token}`);
+      console.log(`token (en ~/.config/doc-review/config.json):\n  ${token}`);
       console.log(`OWNER_TOKEN_SHA256 (en el Secret del servidor):\n  ${sha256Hex(token)}`);
       return 0;
     }
@@ -70,7 +70,7 @@ async function main(argv: string[]): Promise<number> {
     case "publish": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { message: { type: "string", short: "m" } } });
       const [pdf, avance] = positionals;
-      if (!pdf || !avance) throw new Error("uso: revision-tesis publish tesis.pdf avance.json [-m nota]");
+      if (!pdf || !avance) throw new Error("uso: doc-review publish tesis.pdf avance.json [-m nota]");
       const client = new Client(await loadClientConfig());
       const r = await client.publish(pdf, avance, values.message ?? "");
       console.log(`publicada la versión ${r.version.number} (${r.version.page_count} páginas): ${r.url}`);
@@ -122,7 +122,7 @@ async function main(argv: string[]): Promise<number> {
       });
       if (sub === "add") {
         const name = positionals[0];
-        if (!name) throw new Error('uso: revision-tesis directors add "Nombre" [--role R] [--email E]');
+        if (!name) throw new Error('uso: doc-review directors add "Nombre" [--role R] [--email E]');
         const r = await client.json<{ director: D; link: string; email: { sent: boolean; error?: string } }>("POST", "/api/directors", {
           name,
           role: values.role ?? "",
@@ -136,7 +136,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       const id = Number(positionals[0]);
-      if (!Number.isInteger(id)) throw new Error(`uso: revision-tesis directors ${sub} ID`);
+      if (!Number.isInteger(id)) throw new Error(`uso: doc-review directors ${sub} ID`);
       if (sub === "rotate") {
         const r = await client.json<{ director: D; link: string; email: { sent: boolean; error?: string } }>("POST", `/api/directors/${id}/rotate`, {
           send_link: values["send-link"] === true,
@@ -160,7 +160,7 @@ async function main(argv: string[]): Promise<number> {
 
     case "sessions": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { directors: { type: "boolean" } } });
-      if (positionals[0] !== "close-all") throw new Error("uso: revision-tesis sessions close-all [--directors]");
+      if (positionals[0] !== "close-all") throw new Error("uso: doc-review sessions close-all [--directors]");
       const client = new Client(await loadClientConfig());
       const r = await client.json<{ closed: { owner: number; directors: number } }>("POST", "/api/sessions/close-all", {
         directors: values.directors === true,

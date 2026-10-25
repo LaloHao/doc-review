@@ -73,7 +73,7 @@ export function validateAvance(input: unknown): Avance {
   };
 }
 
-// --- Generating avance.json from the org sources (CLI: revision-tesis avance) ---
+// --- Generating avance.json from the org sources (CLI: doc-review avance) ---
 
 /** Text of an org file as it would be read: no drawers, comments, keywords, markup. */
 export function orgProse(src: string): string {

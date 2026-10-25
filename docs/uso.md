@@ -23,36 +23,36 @@ org de cada capítulo.
 1. Genera tu token de autor:
 
    ```sh
-   revision-tesis gen-token
+   doc-review gen-token
    ```
 
    La primera línea es el **token** (tuyo, secreto); la segunda es su **SHA-256**,
    que es lo único que conoce el servidor (`OWNER_TOKEN_SHA256` en el Secret del
    clúster, ver `docs/deploy.md`).
 
-2. Guarda la dirección del sitio y el token en `~/.config/revision-tesis/config.json`,
+2. Guarda la dirección del sitio y el token en `~/.config/doc-review/config.json`,
    legible solo por ti:
 
    ```sh
-   mkdir -p ~/.config/revision-tesis
-   cat > ~/.config/revision-tesis/config.json <<'EOF'
-   {"url": "https://tesis.hao.systems", "token": "rt_owner_…"}
+   mkdir -p ~/.config/doc-review
+   cat > ~/.config/doc-review/config.json <<'EOF'
+   {"url": "https://review.hao.systems", "token": "dr_owner_…"}
    EOF
-   chmod 600 ~/.config/revision-tesis/config.json
+   chmod 600 ~/.config/doc-review/config.json
    ```
 
    La CLI y Emacs se niegan a usar el archivo si otros usuarios pueden leerlo, y
    si la dirección no empieza con `https://` (el token viaja en cada petición;
    `http://` solo se acepta para `localhost` o `127.0.0.1`).
 
-3. En el navegador, entra una vez en `https://tesis.hao.systems/entrar` con el
+3. En el navegador, entra una vez en `https://review.hao.systems/entrar` con el
    token: queda una sesión de 30 días en ese navegador (se renueva sola mientras
    la uses).
 
    - **Cambiar el token** (`gen-token` otra vez y el SHA-256 nuevo en el Secret)
      cierra todas tus sesiones del navegador abiertas con el anterior.
    - **Cerrar todas las sesiones**: en el panel, Ajustes → Sesiones, o
-     `revision-tesis sessions close-all`. Cierra tus sesiones del navegador en
+     `doc-review sessions close-all`. Cierra tus sesiones del navegador en
      todos los equipos (la CLI y Emacs siguen funcionando con el token); con la
      casilla «También las de todos los directores» (`--directors`), los
      directores tienen que abrir de nuevo su enlace personal. Úsalo si perdiste
@@ -67,22 +67,22 @@ Compila la tesis como siempre (`make pdf` en la carpeta de la tesis) y genera
 Cada publicación es una **versión nueva**; los comentarios se quedan en la versión
 sobre la que se hicieron.
 
-- **Emacs**: desde cualquier archivo de la tesis, `M-x revision-tesis-publicar`
+- **Emacs**: desde cualquier archivo de la tesis, `M-x doc-review-publicar`
   (`SPC m z p`). Busca `tesis.org` hacia arriba, sube `tesis.pdf` y `avance.json`
   de esa carpeta y te pide la nota. Te avisa si el PDF es más viejo que los `.org`.
 - **CLI** (o desde el Makefile):
 
   ```sh
-  revision-tesis avance tesis.org -o avance.json
-  revision-tesis publish tesis.pdf avance.json -m "Atendí los comentarios del capítulo 2"
+  doc-review avance tesis.org -o avance.json
+  doc-review publish tesis.pdf avance.json -m "Atendí los comentarios del capítulo 2"
   ```
 
   Un objetivo de Makefile posible:
 
   ```make
   publicar: tesis.pdf
-  	revision-tesis avance tesis.org -o avance.json
-  	revision-tesis publish tesis.pdf avance.json -m "$(NOTA)"
+  	doc-review avance tesis.org -o avance.json
+  	doc-review publish tesis.pdf avance.json -m "$(NOTA)"
   ```
 
 - **Web**: en tu panel, «Publicar una versión desde el navegador».
@@ -100,7 +100,7 @@ un aviso de la versión nueva con la nota (sin su enlace personal).
 ```
 
 `status` es `borrador`, `revision`, `terminado` o `null`; `goal` es una meta de
-palabras o `null`. `revision-tesis avance tesis.org` lo genera: un capítulo por
+palabras o `null`. `doc-review avance tesis.org` lo genera: un capítulo por
 cada `#+INCLUDE:` de `tesis.org` (el `id` es el nombre del archivo, el título es
 su primer encabezado), contando las palabras sin marcado, comentarios, bloques de
 comentario ni citas. La meta y el estado salen de dos líneas opcionales en cada
@@ -114,7 +114,7 @@ capítulo:
 Para que Emacs lo regenere antes de publicar:
 
 ```elisp
-(setq revision-tesis-avance-command "revision-tesis avance tesis.org -o avance.json")
+(setq doc-review-avance-command "doc-review avance tesis.org -o avance.json")
 ```
 
 En la web, cada versión muestra **Avance y cambios**: la tabla por capítulo
@@ -133,8 +133,8 @@ huella (hash).
 - **Crear**: en el panel, «Agregar director» (nombre, rol, correo opcional), o
 
   ```sh
-  revision-tesis directors add "Dra. Ana Torres Ruiz" --role Director --email ana@… --replies instant
-  revision-tesis directors add "Dr. Luis Méndez Ortega" --role Codirector
+  doc-review directors add "Dra. Ana Torres Ruiz" --role Director --email ana@… --replies instant
+  doc-review directors add "Dr. Luis Méndez Ortega" --role Codirector
   ```
 
   - «Avisarle por correo cuando publique una versión nueva» (`--notify`): opcional,
@@ -144,11 +144,11 @@ huella (hash).
     privado.
 - **Enlace nuevo** (rotar): genera otro enlace; el anterior y las sesiones abiertas
   con él dejan de funcionar. Úsalo si un enlace se perdió o se compartió de más.
-  `revision-tesis directors rotate ID [--send-link]`.
+  `doc-review directors rotate ID [--send-link]`.
 - **Revocar**: corta el acceso de inmediato (enlace y sesiones).
-  `revision-tesis directors revoke ID`. «Reactivar con enlace nuevo» lo vuelve a
+  `doc-review directors revoke ID`. «Reactivar con enlace nuevo» lo vuelve a
   habilitar con un enlace distinto.
-- `revision-tesis directors list` muestra los IDs.
+- `doc-review directors list` muestra los IDs.
 
 Al abrir el enlace, el navegador del director guarda una sesión (180 días, que se
 renuevan mientras la use) y la dirección cambia a la página principal, para que
@@ -164,7 +164,7 @@ suyos: las respuestas de otro director en un hilo tuyo no se le muestran (ni
 quién lo resolvió, si fue otro director), y tampoco le llegan por correo.
 
 **Avisos de respuestas a los directores** (columna «Correo» del panel, lista
-«Respuestas»; o `revision-tesis directors replies ID instant|daily|never`):
+«Respuestas»; o `doc-review directors replies ID instant|daily|never`):
 cuando alguien más responde en un hilo que el director abrió o en el que
 respondió, puede recibir un correo **al momento**, un **resumen diario** o
 **nunca** (por omisión). El director también puede cambiarlo él mismo en
@@ -191,8 +191,8 @@ Cada director puede escribir hasta 500 comentarios y respuestas en 24 horas
   con la cita y el enlace al hilo; o un resumen diario. Si un director **edita**
   un comentario, también te llega un aviso con el texto anterior y el nuevo (el
   servidor guarda las últimas 20 versiones: `GET /api/comments/ID/edits`).
-- **CLI**: `revision-tesis comments` (abiertos), `--all`, `--version N`, `--json`.
-- **Emacs**: `M-x revision-tesis-comentarios` (`SPC m z c`) abre un buffer org con
+- **CLI**: `doc-review comments` (abiertos), `--all`, `--version N`, `--json`.
+- **Emacs**: `M-x doc-review-comentarios` (`SPC m z c`) abre un buffer org con
   los hilos abiertos agrupados por capítulo y página: autor, fecha, cita,
   comentarios, un enlace al lugar del `.org` donde está el texto citado, y un
   enlace al hilo en la web. Los que no se pudieron ubicar (comentarios sobre un
@@ -206,36 +206,36 @@ Cada director puede escribir hasta 500 comentarios y respuestas en 24 horas
 
 ### Emacs (Doom)
 
-`emacs/revision-tesis.el` es Emacs Lisp puro (url.el, JSON nativo; Emacs 29 o
+`emacs/doc-review.el` es Emacs Lisp puro (url.el, JSON nativo; Emacs 29 o
 más nuevo). En `~/.config/doom/config.el`:
 
 ```elisp
 ;; Revisión de la tesis: comentarios de los directores sobre el PDF.
-(use-package! revision-tesis
-  :load-path "~/dev/lalohao/revision-tesis/emacs"
-  :commands (revision-tesis-publicar revision-tesis-comentarios
-             revision-tesis-responder revision-tesis-resolver
-             revision-tesis-actualizar revision-tesis-mode)
+(use-package! doc-review
+  :load-path "~/dev/lalohao/doc-review/emacs"
+  :commands (doc-review-publicar doc-review-comentarios
+             doc-review-responder doc-review-resolver
+             doc-review-actualizar doc-review-mode)
   ;; Notas de Flymake en los .org de una tesis (si existe config.json).
-  :hook (org-mode . revision-tesis-maybe-enable))
+  :hook (org-mode . doc-review-maybe-enable))
 
 ;; Bajo el localleader de org, en "z": Org no usa esa tecla y "w" ya es de research.
 (map! :after org
       :map org-mode-map
       :localleader
       (:prefix ("z" . "revisión (directores)")
-       :desc "Publicar versión"       "p" #'revision-tesis-publicar
-       :desc "Comentarios"            "c" #'revision-tesis-comentarios
-       :desc "Responder hilo"         "r" #'revision-tesis-responder
-       :desc "Resolver hilo"          "x" #'revision-tesis-resolver
-       :desc "Actualizar notas"       "a" #'revision-tesis-actualizar
-       :desc "Notas en el texto"      "m" #'revision-tesis-mode))
+       :desc "Publicar versión"       "p" #'doc-review-publicar
+       :desc "Comentarios"            "c" #'doc-review-comentarios
+       :desc "Responder hilo"         "r" #'doc-review-responder
+       :desc "Resolver hilo"          "x" #'doc-review-resolver
+       :desc "Actualizar notas"       "a" #'doc-review-actualizar
+       :desc "Notas en el texto"      "m" #'doc-review-mode))
 ```
 
 No hace falta `doom sync` (no es un paquete descargado): basta recargar la
 configuración.
 
-- **Notas en el texto** (`revision-tesis-mode`): cada comentario abierto aparece
+- **Notas en el texto** (`doc-review-mode`): cada comentario abierto aparece
   como nota de Flymake sobre el texto citado en el `.org`. Los comentarios se
   descargan en segundo plano al abrir el archivo; `SPC m z a` los vuelve a pedir.
   Si la descarga falla (token incorrecto, servidor caído), el motivo aparece en el

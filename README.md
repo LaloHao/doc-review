@@ -1,4 +1,4 @@
-# revision-tesis
+# doc-review
 
 A small web app where thesis directors comment on the compiled thesis PDF, and
 the author gets the comments on the web, on Telegram, by email and in Emacs, next
@@ -19,7 +19,7 @@ to the org source.
   when a director edits a comment. Directors can opt in to an email when a new
   version is published, and to emails (at once or a daily digest) when someone
   else replies in a thread they opened or replied to.
-- **Emacs** (`emacs/revision-tesis.el`): publish from the thesis directory, read
+- **Emacs** (`emacs/doc-review.el`): publish from the thesis directory, read
   the comments in an org buffer with links to the matching place in the org
   sources, reply, resolve, and see open comments as Flymake notes on the text.
 - A **CLI** for the same from a shell or a Makefile.
@@ -57,7 +57,7 @@ browser (pdf.js viewer, plain ES modules)      Emacs (url.el)   CLI (fetch)
 | `src/cli.ts`, `src/client.ts`, `src/format.ts` | CLI (server and owner commands) |
 | `public/` | Browser code: `viewer.js` (pdf.js, selection, threads), `admin.js` |
 | `emacs/` | Emacs client and its ERT tests |
-| `deploy/helm/revision-tesis` | Helm chart |
+| `deploy/helm/doc-review` | Helm chart |
 | `deploy/infra-draft/` | Draft files for the private `infra`/`gitops` repos (not applied) |
 
 ### Data model
@@ -78,7 +78,7 @@ a Helm hook Job with the CloudNativePG `<app>_admin` role (owner of the tables),
 whose DSN only that Job sees; the app runs with `DATABASE_URL` (the `<app>_app`
 role) and `MIGRATE_ON_START=false`, and refuses to start if one is pending.
 Locally they run at startup (`DATABASE_ADMIN_URL`, default `DATABASE_URL`).
-`revision-tesis migrate` runs them by hand.
+`doc-review migrate` runs them by hand.
 
 ### Why these choices
 
@@ -119,7 +119,7 @@ Locally they run at startup (`DATABASE_ADMIN_URL`, default `DATABASE_URL`).
   them. «Cerrar todas las sesiones» (panel, `POST /api/sessions/close-all`, CLI
   `sessions close-all [--directors]`) ends every owner web session and,
   optionally, every director session.
-- **Sessions**: random 32-byte ids stored hashed; cookie `__Host-rt_session`,
+- **Sessions**: random 32-byte ids stored hashed; cookie `__Host-dr_session`,
   `HttpOnly; Secure; SameSite=Lax`; 30 days (owner) / 180 days (directors),
   sliding (the cookie's `Max-Age` is renewed with the server-side expiry).
 - **CSRF** for cookie-authenticated mutations: same origin required (`Origin`
@@ -182,9 +182,9 @@ OWNER_TOKEN_SHA256=<sha256> PUBLIC_URL=http://localhost:8080 node dist/cli.js se
 # data (PGlite + PDFs) goes to ./data
 ```
 
-To have the `revision-tesis` command on your PATH: `pnpm link --global` (or call
+To have the `doc-review` command on your PATH: `pnpm link --global` (or call
 `node dist/cli.js`). Then put `{"url": "http://localhost:8080", "token": "<token>"}` in
-`~/.config/revision-tesis/config.json` (`chmod 600`) and:
+`~/.config/doc-review/config.json` (`chmod 600`) and:
 
 ```sh
 node test/fixtures/make-pdf.mjs /tmp/v1.pdf                 # a sample thesis PDF + avance.json

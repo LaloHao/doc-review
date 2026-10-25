@@ -5,12 +5,12 @@ kind: NetworkPolicy
 metadata:
   name: {{ $.Release.Name }}
   labels:
-    {{- include "revision-tesis.labels" $ | nindent 4 }}
+    {{- include "doc-review.labels" $ | nindent 4 }}
 spec:
   # The app pods only (the migration Job's pods have other labels).
   podSelector:
     matchLabels:
-      {{- include "revision-tesis.selector" $ | nindent 6 }}
+      {{- include "doc-review.selector" $ | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
     # Only the Cloudflare tunnel reaches the app.

@@ -149,7 +149,7 @@ export function loginPage(pre: string, error = ""): string {
         </label>
         <button type="submit">Entrar</button>
       </form>
-      <p class="muted">El token está en <code>~/.config/revision-tesis/config.json</code>. Solo se pide una vez por navegador.</p>
+      <p class="muted">El token está en <code>~/.config/doc-review/config.json</code>. Solo se pide una vez por navegador.</p>
     </main>`,
   );
 }
@@ -321,7 +321,7 @@ export function ownerDashboard(
     { ...l, scripts: ["/static/admin.js"], data: { "max-pdf-mb": input.maxPdfMb } },
     `<main class="wide">
       <h1>Tu tesis</h1>
-      ${latest ? `<p class="lead">${esc(latest.title)}</p>` : `<p>Aún no has publicado ninguna versión. Usa <code>revision-tesis publish</code>, Emacs (<code>revision-tesis-publicar</code>) o el formulario de abajo.</p>`}
+      ${latest ? `<p class="lead">${esc(latest.title)}</p>` : `<p>Aún no has publicado ninguna versión. Usa <code>doc-review publish</code>, Emacs (<code>doc-review-publicar</code>) o el formulario de abajo.</p>`}
 
       ${latest ? `<section><h2>Avance (versión ${latest.number})</h2>${progressTable(latest.avance, prev?.avance ?? null)}</section>` : ""}
 

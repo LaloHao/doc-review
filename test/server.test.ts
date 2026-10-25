@@ -35,7 +35,7 @@ class Browser {
     const set = res.headers.getSetCookie();
     for (const c of set) {
       const [pair] = c.split(";");
-      if (pair!.startsWith("__Host-rt_session=")) this.cookie = pair!.endsWith("=") ? "" : pair!;
+      if (pair!.startsWith("__Host-dr_session=")) this.cookie = pair!.endsWith("=") ? "" : pair!;
     }
     return res;
   }
@@ -182,7 +182,7 @@ describe("director links", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/");
     const set = res.headers.getSetCookie().join("\n");
-    expect(set).toMatch(/__Host-rt_session=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; Secure; SameSite=Lax; HttpOnly/);
+    expect(set).toMatch(/__Host-dr_session=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; Secure; SameSite=Lax; HttpOnly/);
     expect(set).not.toContain(directorLink.split("/").pop()!);
     const home = await director.get("/");
     expect(home.status).toBe(303);
@@ -489,7 +489,7 @@ describe("owner web login", () => {
     expect((await post(OWNER_TOKEN, "https://evil.example")).status).toBe(403);
     const ok = await post(OWNER_TOKEN);
     expect(ok.status).toBe(303);
-    b.cookie = ok.headers.getSetCookie().find((c) => c.startsWith("__Host-rt_session="))!.split(";")[0]!;
+    b.cookie = ok.headers.getSetCookie().find((c) => c.startsWith("__Host-dr_session="))!.split(";")[0]!;
     const dash = await b.get("/");
     const text = await dash.text();
     expect(text).toContain("Tu tesis");
@@ -617,7 +617,7 @@ describe("owner sessions", () => {
     const { Repo, ownerSessionFingerprint } = await import("../src/repo.js");
     const { sha256Hex } = await import("../src/server/crypto.js");
     const before = new Repo(s.repo.db, "x", ownerSessionFingerprint(sha256Hex(OWNER_TOKEN)));
-    const after = new Repo(s.repo.db, "x", ownerSessionFingerprint(sha256Hex("rt_owner_rotated")));
+    const after = new Repo(s.repo.db, "x", ownerSessionFingerprint(sha256Hex("dr_owner_rotated")));
     const sess = await before.createSession("owner", null, 3600_000);
     expect(await before.getSession(sess.id, () => 3600_000)).not.toBeNull();
     expect(await after.getSession(sess.id, () => 3600_000)).toBeNull();
@@ -640,7 +640,7 @@ describe("owner sessions", () => {
           headers: { cookie: pre, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ _csrf: pre.split("=")[1]!, token: OWNER_TOKEN }).toString(),
         });
-        return ok.headers.getSetCookie().find((c) => c.startsWith("__Host-rt_session="))!.split(";")[0]!;
+        return ok.headers.getSetCookie().find((c) => c.startsWith("__Host-dr_session="))!.split(";")[0]!;
       };
       const bearer = { authorization: `Bearer ${OWNER_TOKEN}`, "content-type": "application/json" };
       const d = (await (await fetch(fresh.url + "/api/directors", { method: "POST", headers: bearer, body: JSON.stringify({ name: "Dr. X" }) })).json()) as { link: string };
@@ -660,7 +660,7 @@ describe("owner sessions", () => {
         body: JSON.stringify({ directors: true }),
       });
       expect(((await r.json()) as { closed: unknown }).closed).toEqual({ owner: 1, directors: 1 });
-      expect(r.headers.getSetCookie()[0]).toMatch(/^__Host-rt_session=; .*Max-Age=0/);
+      expect(r.headers.getSetCookie()[0]).toMatch(/^__Host-dr_session=; .*Max-Age=0/);
       expect([await me(web3), await me(dCookie)]).toEqual([401, 401]);
       // Directors can't do it.
       const d2 = (await (await fetch(fresh.url + `/api/directors/1/rotate`, { method: "POST", headers: bearer, body: "{}" })).json()) as { link: string };

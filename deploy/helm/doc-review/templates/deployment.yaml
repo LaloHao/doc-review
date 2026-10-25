@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}
   labels:
-    {{- include "revision-tesis.labels" . | nindent 4 }}
+    {{- include "doc-review.labels" . | nindent 4 }}
 spec:
   # One replica: in-memory rate limits, a ReadWriteOnce volume, an in-process
   # digest timer.
@@ -12,11 +12,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "revision-tesis.selector" . | nindent 6 }}
+      {{- include "doc-review.selector" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "revision-tesis.selector" . | nindent 8 }}
+        {{- include "doc-review.selector" . | nindent 8 }}
       annotations:
         # Running processes don't reread a ConfigMap: restart on change.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
@@ -30,10 +30,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- include "revision-tesis.podSecurityContext" . | nindent 8 }}
+        {{- include "doc-review.podSecurityContext" . | nindent 8 }}
       containers:
         - name: app
-          image: {{ include "revision-tesis.image" . | quote }}
+          image: {{ include "doc-review.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["serve"]
           ports:
@@ -54,7 +54,7 @@ spec:
                 name: {{ .Values.storage.s3.credentialsSecret }}
             {{- end }}
           securityContext:
-            {{- include "revision-tesis.containerSecurityContext" . | nindent 12 }}
+            {{- include "doc-review.containerSecurityContext" . | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -75,7 +75,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if include "revision-tesis.needsVolume" . }}
+            {{- if include "doc-review.needsVolume" . }}
             - name: data
               mountPath: /data
             {{- end }}
@@ -83,7 +83,7 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
-        {{- if include "revision-tesis.needsVolume" . }}
+        {{- if include "doc-review.needsVolume" . }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.storage.pvc.existingClaim | default (printf "%s-data" .Release.Name) }}

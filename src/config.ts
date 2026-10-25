@@ -117,7 +117,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const ownerTokenSha256 = str(env, "OWNER_TOKEN_SHA256").toLowerCase();
   if (ownerTokenSha256 && !/^[0-9a-f]{64}$/.test(ownerTokenSha256)) {
-    throw new Error("OWNER_TOKEN_SHA256 must be 64 hex characters (revision-tesis gen-token)");
+    throw new Error("OWNER_TOKEN_SHA256 must be 64 hex characters (doc-review gen-token)");
   }
 
   const botToken = str(env, "TELEGRAM_BOT_TOKEN");

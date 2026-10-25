@@ -3,13 +3,13 @@
 {{- if not (has .Values.database.type (list "postgres" "embedded")) }}{{ fail "database.type must be postgres or embedded" }}{{ end }}
 {{- if and (eq .Values.storage.type "s3") (or (not .Values.storage.s3.url) (not .Values.storage.s3.endpoint)) }}{{ fail "storage.s3.url and storage.s3.endpoint are required" }}{{ end }}
 {{- if and (eq .Values.database.type "postgres") (not .Values.envSecretName) }}{{ fail "envSecretName (with DATABASE_URL) is required with database.type=postgres" }}{{ end }}
-{{- if and (include "revision-tesis.migrationJob" .) (not .Values.migrations.adminSecretName) }}{{ fail "migrations.adminSecretName (the admin role's DSN) is required with migrations.job=true; or set migrations.job=false to migrate at startup with DATABASE_ADMIN_URL from envSecretName" }}{{ end }}
+{{- if and (include "doc-review.migrationJob" .) (not .Values.migrations.adminSecretName) }}{{ fail "migrations.adminSecretName (the admin role's DSN) is required with migrations.job=true; or set migrations.job=false to migrate at startup with DATABASE_ADMIN_URL from envSecretName" }}{{ end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-config
   labels:
-    {{- include "revision-tesis.labels" . | nindent 4 }}
+    {{- include "doc-review.labels" . | nindent 4 }}
 data:
   PUBLIC_URL: {{ .Values.publicUrl | quote }}
   OWNER_NAME: {{ .Values.config.ownerName | quote }}
@@ -21,7 +21,7 @@ data:
   EMAIL_OWNER_TO: {{ .Values.config.ownerEmail | quote }}
   MAX_DIRECTOR_COMMENTS_PER_DAY: {{ .Values.config.maxDirectorCommentsPerDay | quote }}
   # The hook Job migrates; the app only checks that nothing is pending.
-  MIGRATE_ON_START: {{ ternary "false" "true" (eq (include "revision-tesis.migrationJob" .) "true") | quote }}
+  MIGRATE_ON_START: {{ ternary "false" "true" (eq (include "doc-review.migrationJob" .) "true") | quote }}
   {{- with .Values.config.smtp }}
   {{- if .host }}
   SMTP_HOST: {{ .host | quote }}

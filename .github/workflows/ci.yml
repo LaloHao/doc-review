@@ -27,9 +27,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - uses: azure/setup-helm@v5
-      - run: helm lint deploy/helm/revision-tesis --set publicUrl=https://revision.example.com --set envSecretName=revision-tesis-env --set migrations.adminSecretName=revision-tesis-db-admin
-      - run: helm template t deploy/helm/revision-tesis --set publicUrl=https://revision.example.com --set envSecretName=revision-tesis-env --set migrations.adminSecretName=revision-tesis-db-admin --set networkPolicy.enabled=true > /dev/null
-      - run: helm template t deploy/helm/revision-tesis --set publicUrl=https://revision.example.com --set database.type=embedded > /dev/null
+      - run: helm lint deploy/helm/doc-review --set publicUrl=https://revision.example.com --set envSecretName=doc-review-env --set migrations.adminSecretName=doc-review-db-admin
+      - run: helm template t deploy/helm/doc-review --set publicUrl=https://revision.example.com --set envSecretName=doc-review-env --set migrations.adminSecretName=doc-review-db-admin --set networkPolicy.enabled=true > /dev/null
+      - run: helm template t deploy/helm/doc-review --set publicUrl=https://revision.example.com --set database.type=embedded > /dev/null
 
   emacs:
     runs-on: ubuntu-latest
@@ -57,10 +57,10 @@ jobs:
       - name: Tags
         id: tags
         run: |
-          IMAGE=ghcr.io/lalohao/revision-tesis
+          IMAGE=ghcr.io/lalohao/doc-review
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION=${GITHUB_REF_NAME#v}
-            APP=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' deploy/helm/revision-tesis/Chart.yaml)
+            APP=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' deploy/helm/doc-review/Chart.yaml)
             if [ "$VERSION" != "$APP" ]; then echo "tag $GITHUB_REF_NAME != chart appVersion $APP" >&2; exit 1; fi
             echo "tags=$IMAGE:$VERSION" >> "$GITHUB_OUTPUT"
           else

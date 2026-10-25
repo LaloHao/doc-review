@@ -97,7 +97,7 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
     const pending = await pendingMigrations(db);
     if (pending.length) {
       await db.close();
-      throw new Error(`pending migrations: ${pending.join(", ")} (run revision-tesis migrate with DATABASE_ADMIN_URL)`);
+      throw new Error(`pending migrations: ${pending.join(", ")} (run doc-review migrate with DATABASE_ADMIN_URL)`);
     }
   }
   if (!db) {
@@ -141,7 +141,7 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
   await new Promise<void>((ok) => server.listen(config.port, config.host, ok));
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : config.port;
-  log(`revision-tesis listening on ${config.host}:${port} (${describeConfig(config)})`);
+  log(`doc-review listening on ${config.host}:${port} (${describeConfig(config)})`);
 
   const now = opts.now ?? (() => new Date());
   let ticking = false;

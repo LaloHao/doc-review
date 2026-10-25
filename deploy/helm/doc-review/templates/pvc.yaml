@@ -1,10 +1,10 @@
-{{- if and (include "revision-tesis.needsVolume" .) (not .Values.storage.pvc.existingClaim) }}
+{{- if and (include "doc-review.needsVolume" .) (not .Values.storage.pvc.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-data
   labels:
-    {{- include "revision-tesis.labels" . | nindent 4 }}
+    {{- include "doc-review.labels" . | nindent 4 }}
   annotations:
     # The PDFs (and the embedded database) outlive the release.
     helm.sh/resource-policy: keep

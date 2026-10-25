@@ -6,7 +6,7 @@ import type { Mail } from "../src/notify/notify.js";
 import { sha256Hex } from "../src/server/crypto.js";
 import { startServer, type Running } from "../src/server/main.js";
 
-export const OWNER_TOKEN = "rt_owner_test-token-0123456789abcdefghijklmnopqrstuvwxyz";
+export const OWNER_TOKEN = "dr_owner_test-token-0123456789abcdefghijklmnopqrstuvwxyz";
 
 export interface TestServer extends Running {
   mails: Mail[];
@@ -18,7 +18,7 @@ export interface TestServer extends Running {
 
 /** A real HTTP server on an ephemeral port, in-memory Postgres (PGlite), temp dir storage, fake notifiers. */
 export async function startTestServer(env: Record<string, string> = {}): Promise<TestServer> {
-  const dir = await mkdtemp(join(tmpdir(), "revision-tesis-"));
+  const dir = await mkdtemp(join(tmpdir(), "doc-review-"));
   const mails: Mail[] = [];
   const telegrams: string[] = [];
   const logs: string[] = [];

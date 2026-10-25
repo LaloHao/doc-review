@@ -1,10 +1,10 @@
-# revision-tesis: one Deployment (a single replica: rate limits live in memory and
+# doc-review: one Deployment (a single replica: rate limits live in memory and
 # the PDF volume is ReadWriteOnce), a Service, a ConfigMap with the non-secret
 # settings and, when needed, a PVC. Expose the Service through Cloudflare Tunnel;
 # the chart has no Ingress.
 
 image:
-  repository: ghcr.io/lalohao/revision-tesis
+  repository: ghcr.io/lalohao/doc-review
   # "" = the chart's appVersion (an immutable release tag, pushed by CI for each
   # v* git tag). In the cluster, set the commit tag (<sha>) of the image to run.
   tag: ""
@@ -20,7 +20,7 @@ publicUrl: ""
 
 # Name of an existing Secret (never created by this chart) whose keys become
 # environment variables of the app. Expected keys:
-#   OWNER_TOKEN_SHA256            sha256 of the owner token (revision-tesis gen-token)
+#   OWNER_TOKEN_SHA256            sha256 of the owner token (doc-review gen-token)
 #   DATABASE_URL                  postgres://<app role>@…  (runtime)
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   (optional)
 #   SMTP_PASSWORD                 (optional; a Proton Mail SMTP token, for example)
@@ -73,7 +73,7 @@ database:
   type: postgres
 
 # Migrations (database.type postgres): a Helm hook Job (pre-install,
-# pre-upgrade) runs `revision-tesis migrate` with the admin role, whose DSN is
+# pre-upgrade) runs `doc-review migrate` with the admin role, whose DSN is
 # only in adminSecretName; the app pod gets DATABASE_URL (the app role) only,
 # and refuses to start if a migration is pending.
 migrations:

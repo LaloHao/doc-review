@@ -39,8 +39,8 @@ import * as pages from "./pages.js";
 import { cleanText, esc } from "../text.js";
 import { ipBucket, RateLimiter } from "./ratelimit.js";
 
-export const SESSION_COOKIE = "__Host-rt_session";
-const PRE_COOKIE = "__Host-rt_pre";
+export const SESSION_COOKIE = "__Host-dr_session";
+const PRE_COOKIE = "__Host-dr_pre";
 const OWNER_TTL = 30 * 24 * 3600_000;
 const DIRECTOR_TTL = 180 * 24 * 3600_000;
 
@@ -863,7 +863,7 @@ export function createApp(deps: AppDeps) {
       const m = /^Bearer\s+(\S+)$/i.exec(auth);
       if (!m || !ownerTokenOk(m[1]!)) {
         limited(bearerLimiter, ipBucket(c.ip));
-        throw new HttpError(401, "Token no válido.", { "www-authenticate": 'Bearer realm="revision-tesis"' });
+        throw new HttpError(401, "Token no válido.", { "www-authenticate": 'Bearer realm="doc-review"' });
       }
       c.bearer = true;
       c.session = { kind: "owner", director: null, csrf: "", idHash: "" };

@@ -1,4 +1,4 @@
-// Owner API client used by the CLI. Reads ~/.config/revision-tesis/config.json
+// Owner API client used by the CLI. Reads ~/.config/doc-review/config.json
 // ({"url": "...", "token": "..."}), which must not be readable by others (0600).
 
 import { readFile, stat } from "node:fs/promises";
@@ -29,9 +29,9 @@ export function checkServerUrl(url: string): string {
 }
 
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.REVISION_TESIS_CONFIG) return env.REVISION_TESIS_CONFIG;
+  if (env.DOC_REVIEW_CONFIG) return env.DOC_REVIEW_CONFIG;
   const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(base, "revision-tesis", "config.json");
+  return join(base, "doc-review", "config.json");
 }
 
 export async function loadClientConfig(path = configPath()): Promise<ClientConfig> {
@@ -39,7 +39,7 @@ export async function loadClientConfig(path = configPath()): Promise<ClientConfi
   try {
     st = await stat(path);
   } catch {
-    throw new Error(`No existe ${path}. Créalo con {"url": "https://…", "token": "rt_owner_…"} y chmod 600.`);
+    throw new Error(`No existe ${path}. Créalo con {"url": "https://…", "token": "dr_owner_…"} y chmod 600.`);
   }
   if (process.platform !== "win32" && (st.mode & 0o077) !== 0) {
     throw new Error(`${path} es legible por otros usuarios: ejecuta chmod 600 ${path}`);

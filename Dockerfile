@@ -1,4 +1,4 @@
-# revision-tesis: the web app (Node, pdf.js). Runs as an unprivileged user with a
+# doc-review: the web app (Node, pdf.js). Runs as an unprivileged user with a
 # read-only root file system; the only writable path is /data (STORAGE_TYPE=fs
 # PDFs, or the embedded PGlite database when DATABASE_URL is not Postgres).
 

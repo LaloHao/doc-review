@@ -14,7 +14,7 @@ WORK=${WORK:-$(mktemp -d)}
 PORT=${PORT:-8099}
 BASE=http://localhost:$PORT
 CLI="node $REPO/dist/cli.js"
-export REVISION_TESIS_CONFIG=$WORK/config.json
+export DOC_REVIEW_CONFIG=$WORK/config.json
 mkdir -p "$WORK"
 
 step() { printf '\n== %s\n' "$*"; }
@@ -23,8 +23,8 @@ step "owner token"
 TOKEN_OUT=$($CLI gen-token)
 TOKEN=$(echo "$TOKEN_OUT" | sed -n 2p | tr -d ' ')
 SHA=$(echo "$TOKEN_OUT" | sed -n 4p | tr -d ' ')
-printf '{"url":"%s","token":"%s"}' "$BASE" "$TOKEN" > "$REVISION_TESIS_CONFIG"
-chmod 600 "$REVISION_TESIS_CONFIG"
+printf '{"url":"%s","token":"%s"}' "$BASE" "$TOKEN" > "$DOC_REVIEW_CONFIG"
+chmod 600 "$DOC_REVIEW_CONFIG"
 
 step "server on $BASE (data in $WORK/data)"
 PORT=$PORT HOST=127.0.0.1 PUBLIC_URL=$BASE DATA_DIR=$WORK/data OWNER_TOKEN_SHA256=$SHA \
@@ -81,9 +81,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -b "$JAR" -H "origin: $BASE" -H 'conten
 step "Emacs: publish v2 from the thesis directory"
 cp "$WORK/v2.pdf" "$THESIS/tesis.pdf"
 cp "$WORK/v2.avance.json" "$THESIS/avance.json"
-(cd "$THESIS/capitulos" && emacs -Q --batch -L "$REPO/emacs" -l revision-tesis \
-  --eval "(setq revision-tesis-config-file \"$REVISION_TESIS_CONFIG\")" \
-  --eval '(revision-tesis-publicar "Atendí la observación del capítulo 1")')
+(cd "$THESIS/capitulos" && emacs -Q --batch -L "$REPO/emacs" -l doc-review \
+  --eval "(setq doc-review-config-file \"$DOC_REVIEW_CONFIG\")" \
+  --eval '(doc-review-publicar "Atendí la observación del capítulo 1")')
 
 if [ -n "${CHROME:-}" ]; then
   step "browser: director and owner in Chromium, screenshots"
@@ -94,14 +94,14 @@ step "CLI: comments"
 $CLI comments
 
 step "Emacs: comments buffer (batch), reply and resolve"
-(cd "$THESIS" && emacs -Q --batch -L "$REPO/emacs" -l revision-tesis \
-  --eval "(setq revision-tesis-config-file \"$REVISION_TESIS_CONFIG\")" \
+(cd "$THESIS" && emacs -Q --batch -L "$REPO/emacs" -l doc-review \
+  --eval "(setq doc-review-config-file \"$DOC_REVIEW_CONFIG\")" \
   --eval '(progn
-            (let ((threads (revision-tesis-comentarios)))
-              (with-current-buffer revision-tesis-buffer-name (princ (buffer-string)))
+            (let ((threads (doc-review-comentarios)))
+              (with-current-buffer doc-review-buffer-name (princ (buffer-string)))
               (let ((id (alist-get (quote id) (car (last threads)))))
-                (revision-tesis-responder id "Gracias, doctor: agrego la referencia.")
-                (revision-tesis-resolver id))))')
+                (doc-review-responder id "Gracias, doctor: agrego la referencia.")
+                (doc-review-resolver id))))')
 
 step "CLI: comments after resolving (open only, then all)"
 $CLI comments

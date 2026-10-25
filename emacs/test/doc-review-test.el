@@ -1,15 +1,15 @@
-;;; revision-tesis-test.el --- ERT tests for revision-tesis.el -*- lexical-binding: t; -*-
+;;; doc-review-test.el --- ERT tests for doc-review.el -*- lexical-binding: t; -*-
 
-;; Run: emacs -Q --batch -L emacs -l emacs/test/revision-tesis-test.el -f ert-run-tests-batch-and-exit
+;; Run: emacs -Q --batch -L emacs -l emacs/test/doc-review-test.el -f ert-run-tests-batch-and-exit
 ;; HTTP is mocked: no test talks to a server.
 
 ;;; Code:
 
 (require 'ert)
 (require 'cl-lib)
-(require 'revision-tesis)
+(require 'doc-review)
 
-(defconst revision-tesis-test--chapter
+(defconst doc-review-test--chapter
   "* Introducción
 :PROPERTIES:
 :CUSTOM_ID: cap-introduccion
@@ -24,24 +24,24 @@ formal suficiente [cite:@example2024routes] y que empieza a producir rutas poco 
 Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organización.
 ")
 
-(defmacro revision-tesis-test--with-thesis (&rest body)
+(defmacro doc-review-test--with-thesis (&rest body)
   "Run BODY with `root' bound to a temporary thesis directory."
   (declare (indent 0))
-  `(let* ((root (file-name-as-directory (make-temp-file "revision-tesis-test" t)))
-          (revision-tesis--index-cache (make-hash-table :test #'equal)))
+  `(let* ((root (file-name-as-directory (make-temp-file "doc-review-test" t)))
+          (doc-review--index-cache (make-hash-table :test #'equal)))
      (unwind-protect
          (progn
            (make-directory (expand-file-name "capitulos" root))
            (with-temp-file (expand-file-name "tesis.org" root)
              (insert "#+TITLE: Tesis\n#+INCLUDE: \"capitulos/01-introduccion.org\" :minlevel 1\n"))
            (with-temp-file (expand-file-name "capitulos/01-introduccion.org" root)
-             (insert revision-tesis-test--chapter))
+             (insert doc-review-test--chapter))
            (with-temp-file (expand-file-name "capitulos/02-marco.org" root)
              (insert "* Marco teórico\n\nUna ruta de transporte público es una secuencia de paradas.\n"))
            ,@body)
        (delete-directory root t))))
 
-(defun revision-tesis-test--thread (id page quote body &optional chapter)
+(defun doc-review-test--thread (id page quote body &optional chapter)
   "A thread alist as the server returns it."
   `((id . ,id) (version . 2) (page . ,page) (anchor . "text") (quote . ,quote)
     (status . "open") (url . ,(format "https://r.example/v/2#hilo-%d" id))
@@ -52,149 +52,149 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
 
 ;;; Normalization and anchoring
 
-(ert-deftest revision-tesis-test-normalize-quote ()
-  (should (equal (revision-tesis--normalize-quote "Una revi-\nsión  ﬁnal [12] del  ﬂujo, [3, 4–6]")
+(ert-deftest doc-review-test-normalize-quote ()
+  (should (equal (doc-review--normalize-quote "Una revi-\nsión  ﬁnal [12] del  ﬂujo, [3, 4–6]")
                  "unarevisiónfinaldelflujo"))
-  (should (equal (revision-tesis--normalize-quote "Post-Mortem­") "postmortem")))
+  (should (equal (doc-review--normalize-quote "Post-Mortem­") "postmortem")))
 
-(ert-deftest revision-tesis-test-locate-exact-across-markup ()
-  (let* ((index (revision-tesis--index-string revision-tesis-test--chapter))
+(ert-deftest doc-review-test-locate-exact-across-markup ()
+  (let* ((index (doc-review--index-string doc-review-test--chapter))
          ;; As pdf.js gives it: line break, hyphenation, the citation as [1].
-         (q (revision-tesis--normalize-quote
+         (q (doc-review--normalize-quote
              "se integra sin una revi- sión formal suficiente [1] y que empieza"))
-         (hit (revision-tesis--locate-in-index q index)))
+         (hit (doc-review--locate-in-index q index)))
     (should hit)
-    (should (equal (substring revision-tesis-test--chapter (1- (car hit)) (1- (cdr hit)))
+    (should (equal (substring doc-review-test--chapter (1- (car hit)) (1- (cdr hit)))
                    "se integra sin una revisión\nformal suficiente [cite:@example2024routes] y que empieza"))))
 
-(ert-deftest revision-tesis-test-masks-latex-and-comments ()
-  (let ((index (revision-tesis--index-string revision-tesis-test--chapter)))
-    (should (revision-tesis--locate-in-index
-             (revision-tesis--normalize-quote "Un LLM local procesa los datos de viajes") index))
+(ert-deftest doc-review-test-masks-latex-and-comments ()
+  (let ((index (doc-review--index-string doc-review-test--chapter)))
+    (should (doc-review--locate-in-index
+             (doc-review--normalize-quote "Un LLM local procesa los datos de viajes") index))
     (should-not (string-search "comentario" (car index)))
     (should-not (string-search "customid" (car index)))
     (should-not (string-search "cite" (car index)))))
 
-(ert-deftest revision-tesis-test-locate-fuzzy-after-edit ()
+(ert-deftest doc-review-test-locate-fuzzy-after-edit ()
   ;; The author edited the middle of the sentence after compiling the PDF.
-  (let* ((index (revision-tesis--index-string revision-tesis-test--chapter))
-         (q (revision-tesis--normalize-quote
+  (let* ((index (doc-review--index-string doc-review-test--chapter))
+         (q (doc-review--normalize-quote
              "La analítica de datos de viajes se incorpora muy rápido al planificación del transporte público. Esto genera un modelo")))
-    (should (revision-tesis--locate-in-index q index))))
+    (should (doc-review--locate-in-index q index))))
 
-(ert-deftest revision-tesis-test-locate-glossary-expansion ()
+(ert-deftest doc-review-test-locate-glossary-expansion ()
   ;; The PDF expands \\gls{LLM} on first use; the source only has the macro.
-  (let* ((index (revision-tesis--index-string revision-tesis-test--chapter))
-         (q (revision-tesis--normalize-quote
+  (let* ((index (doc-review--index-string doc-review-test--chapter))
+         (q (doc-review--normalize-quote
              "Un modelo de lenguaje de gran tamaño (LLM) local procesa los datos de viajes sin que salgan de la organización."))
-         (hit (revision-tesis--locate-in-index q index)))
+         (hit (doc-review--locate-in-index q index)))
     (should hit)
     (should (string-match-p "procesa los datos de viajes sin que salgan de la organización"
-                            (substring revision-tesis-test--chapter (1- (car hit)) (1- (cdr hit)))))))
+                            (substring doc-review-test--chapter (1- (car hit)) (1- (cdr hit)))))))
 
-(ert-deftest revision-tesis-test-unrelated-quote-not-anchored ()
-  (let ((index (revision-tesis--index-string revision-tesis-test--chapter)))
-    (should-not (revision-tesis--locate-in-index
-                 (revision-tesis--normalize-quote "Las redes neuronales convolucionales clasifican imágenes médicas.")
+(ert-deftest doc-review-test-unrelated-quote-not-anchored ()
+  (let ((index (doc-review--index-string doc-review-test--chapter)))
+    (should-not (doc-review--locate-in-index
+                 (doc-review--normalize-quote "Las redes neuronales convolucionales clasifican imágenes médicas.")
                  index))))
 
-(ert-deftest revision-tesis-test-short-quotes-not-anchored ()
-  (let ((index (revision-tesis--index-string revision-tesis-test--chapter)))
-    (should-not (revision-tesis--locate-in-index (revision-tesis--normalize-quote "Un") index))))
+(ert-deftest doc-review-test-short-quotes-not-anchored ()
+  (let ((index (doc-review--index-string doc-review-test--chapter)))
+    (should-not (doc-review--locate-in-index (doc-review--normalize-quote "Un") index))))
 
-(ert-deftest revision-tesis-test-locate-prefers-chapter-file ()
-  (revision-tesis-test--with-thesis
-    (let* ((files (revision-tesis--org-files root))
-           (loc (revision-tesis--locate
-                 (revision-tesis-test--thread 1 3 "sin una revisión formal suficiente" "x" "01-introduccion")
+(ert-deftest doc-review-test-locate-prefers-chapter-file ()
+  (doc-review-test--with-thesis
+    (let* ((files (doc-review--org-files root))
+           (loc (doc-review--locate
+                 (doc-review-test--thread 1 3 "sin una revisión formal suficiente" "x" "01-introduccion")
                  files)))
       (should (equal (file-name-nondirectory (car loc)) "01-introduccion.org"))
-      (should (= (revision-tesis--line-at (car loc) (cadr loc)) 9)))))
+      (should (= (doc-review--line-at (car loc) (cadr loc)) 9)))))
 
-(ert-deftest revision-tesis-test-sanitize ()
+(ert-deftest doc-review-test-sanitize ()
   (let ((evil (concat "B \e]0;pwned\a \e[31mrojo\e[0m \u202eevil\u2066x\u2069\r\nok\tfin \u009b" (string #x3fffe2))))
-    (should (equal (revision-tesis--sanitize evil) "B ]0;pwned [31mrojo[0m evilx\nok\tfin "))
-    (should (equal (revision-tesis--sanitize nil) ""))
-    (should-not (string-match-p revision-tesis--unsafe-chars-regexp
-                                (revision-tesis--literal evil "  ")))
-    (should-not (string-match-p "[\n\e]" (revision-tesis--clean-heading evil)))))
+    (should (equal (doc-review--sanitize evil) "B ]0;pwned [31mrojo[0m evilx\nok\tfin "))
+    (should (equal (doc-review--sanitize nil) ""))
+    (should-not (string-match-p doc-review--unsafe-chars-regexp
+                                (doc-review--literal evil "  ")))
+    (should-not (string-match-p "[\n\e]" (doc-review--clean-heading evil)))))
 
-(ert-deftest revision-tesis-test-buffer-has-no-control-chars ()
-  (revision-tesis-test--with-thesis
-    (revision-tesis-test--mock
-        `((threads . (,(revision-tesis-test--thread 1 3 "cita \u202eal revés" "Hola \e[2J\e]0;x\a fin"))))
+(ert-deftest doc-review-test-buffer-has-no-control-chars ()
+  (doc-review-test--with-thesis
+    (doc-review-test--mock
+        `((threads . (,(doc-review-test--thread 1 3 "cita \u202eal revés" "Hola \e[2J\e]0;x\a fin"))))
       (let ((default-directory root))
-        (revision-tesis-comentarios))
-      (with-current-buffer revision-tesis-buffer-name
-        (should-not (string-match-p revision-tesis--unsafe-chars-regexp (buffer-string)))
+        (doc-review-comentarios))
+      (with-current-buffer doc-review-buffer-name
+        (should-not (string-match-p doc-review--unsafe-chars-regexp (buffer-string)))
         (should (string-match-p "Hola \\[2J\\]0;x fin" (buffer-string))))
-      (kill-buffer revision-tesis-buffer-name))))
+      (kill-buffer doc-review-buffer-name))))
 
 ;;; Config and HTTP plumbing
 
-(ert-deftest revision-tesis-test-config-permissions ()
+(ert-deftest doc-review-test-config-permissions ()
   (let ((f (make-temp-file "rt-config" nil ".json" "{\"url\": \"https://r.example/\", \"token\": \"t\"}")))
     (unwind-protect
-        (let ((revision-tesis-config-file f))
+        (let ((doc-review-config-file f))
           (set-file-modes f #o644)
-          (should-error (revision-tesis--config) :type 'user-error)
+          (should-error (doc-review--config) :type 'user-error)
           (set-file-modes f #o600)
-          (should (equal (revision-tesis--config) '("https://r.example" . "t"))))
+          (should (equal (doc-review--config) '("https://r.example" . "t"))))
       (delete-file f))))
 
-(ert-deftest revision-tesis-test-config-requires-https ()
+(ert-deftest doc-review-test-config-requires-https ()
   (dolist (case '(("http://r.example" . nil) ("ftp://r.example" . nil)
                   ("https://r.example" . t) ("http://localhost:8080" . t)
                   ("http://127.0.0.1:8099/" . t) ("http://[::1]:8080" . t)))
     (let ((f (make-temp-file "rt-config" nil ".json"
                              (format "{\"url\": \"%s\", \"token\": \"t\"}" (car case)))))
       (unwind-protect
-          (let ((revision-tesis-config-file f))
+          (let ((doc-review-config-file f))
             (set-file-modes f #o600)
             (if (cdr case)
-                (should (revision-tesis--config))
-              (should-error (revision-tesis--config) :type 'user-error)))
+                (should (doc-review--config))
+              (should-error (doc-review--config) :type 'user-error)))
         (delete-file f)))))
 
-(ert-deftest revision-tesis-test-async-fetch-reports-http-errors ()
-  (let ((revision-tesis--fetching t) (revision-tesis--fetched nil)
-        (revision-tesis--threads '(old)) messages)
+(ert-deftest doc-review-test-async-fetch-reports-http-errors ()
+  (let ((doc-review--fetching t) (doc-review--fetched nil)
+        (doc-review--threads '(old)) messages)
     (cl-letf (((symbol-function 'message)
                (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
       (with-temp-buffer
         (insert "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\": \"Token no v\u00e1lido.\"}")
         (setq-local url-http-response-status 401)
-        (revision-tesis--fetch-async-done '(:error (error http 401))))
-      (should-not revision-tesis--fetching)
-      (should revision-tesis--fetched)
-      (should-not revision-tesis--threads)
+        (doc-review--fetch-async-done '(:error (error http 401))))
+      (should-not doc-review--fetching)
+      (should doc-review--fetched)
+      (should-not doc-review--threads)
       (should (string-match-p "no se pudieron descargar los comentarios: Token no válido" (car messages)))
       ;; Connection refused: no HTTP status at all.
       (with-temp-buffer
-        (revision-tesis--fetch-async-done '(:error (file-error "make client process failed" "Connection refused"))))
+        (doc-review--fetch-async-done '(:error (file-error "make client process failed" "Connection refused"))))
       (should (string-match-p "Connection refused" (car messages))))
     ;; Success fills the cache.
-    (let ((revision-tesis--fetched nil))
+    (let ((doc-review--fetched nil))
       (with-temp-buffer
         (insert "HTTP/1.1 200 OK\r\n\r\n{\"threads\": [{\"id\": 3}]}")
         (setq-local url-http-response-status 200)
-        (revision-tesis--fetch-async-done nil))
-      (should revision-tesis--fetched)
-      (should (equal (alist-get 'id (car revision-tesis--threads)) 3)))))
+        (doc-review--fetch-async-done nil))
+      (should doc-review--fetched)
+      (should (equal (alist-get 'id (car doc-review--threads)) 3)))))
 
-(ert-deftest revision-tesis-test-handle-response ()
-  (should (equal (revision-tesis--handle-response 200 "{\"a\": [1, null]}") '((a 1 nil))))
-  (let ((err (should-error (revision-tesis--handle-response 403 "{\"error\": \"Solo el autor\"}")
+(ert-deftest doc-review-test-handle-response ()
+  (should (equal (doc-review--handle-response 200 "{\"a\": [1, null]}") '((a 1 nil))))
+  (let ((err (should-error (doc-review--handle-response 403 "{\"error\": \"Solo el autor\"}")
                            :type 'user-error)))
     (should (string-match-p "Solo el autor" (cadr err)))))
 
-(ert-deftest revision-tesis-test-multipart ()
+(ert-deftest doc-review-test-multipart ()
   (let* ((pdf (make-temp-file "rt" nil ".pdf"))
          (bytes (unibyte-string ?% ?P ?D ?F ?- #xff #x00 #xe2)))
     (unwind-protect
         (progn
           (with-temp-file pdf (set-buffer-multibyte nil) (insert bytes))
-          (let ((body (revision-tesis--multipart "BB" `(("pdf" :file ,pdf :type "application/pdf")
+          (let ((body (doc-review--multipart "BB" `(("pdf" :file ,pdf :type "application/pdf")
                                                        ("note" . "Atendí los comentarios")))))
             (should-not (multibyte-string-p body))
             (should (string-search (concat "\r\n\r\n" bytes "\r\n--BB\r\n") body))
@@ -202,39 +202,39 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
             (should (string-suffix-p "--BB--\r\n" body))))
       (delete-file pdf))))
 
-(ert-deftest revision-tesis-test-headers-unibyte ()
+(ert-deftest doc-review-test-headers-unibyte ()
   ;; Tokens come from JSON (multibyte strings); url.el needs unibyte headers.
-  (let ((h (revision-tesis--headers (decode-coding-string "rt_owner_x" 'utf-8) "application/json")))
-    (should (equal (cdr (assoc "Authorization" h)) "Bearer rt_owner_x"))
+  (let ((h (doc-review--headers (decode-coding-string "dr_owner_x" 'utf-8) "application/json")))
+    (should (equal (cdr (assoc "Authorization" h)) "Bearer dr_owner_x"))
     (should (cl-every (lambda (x) (not (multibyte-string-p (cdr x)))) h))))
 
 ;;; Commands with a mocked server
 
-(defmacro revision-tesis-test--mock (response &rest body)
-  "Run BODY with `revision-tesis--request' returning RESPONSE; bind `calls'."
+(defmacro doc-review-test--mock (response &rest body)
+  "Run BODY with `doc-review--request' returning RESPONSE; bind `calls'."
   (declare (indent 1))
   `(let ((calls nil))
-     (cl-letf (((symbol-function 'revision-tesis--request)
+     (cl-letf (((symbol-function 'doc-review--request)
                 (lambda (method path &optional data type)
                   (push (list method path data type) calls)
                   ,response)))
        ,@body)))
 
-(ert-deftest revision-tesis-test-comentarios-buffer ()
-  (revision-tesis-test--with-thesis
-    (revision-tesis-test--mock
-        `((threads . (,(revision-tesis-test--thread 1 3 "sin una revisión formal suficiente"
+(ert-deftest doc-review-test-comentarios-buffer ()
+  (doc-review-test--with-thesis
+    (doc-review-test--mock
+        `((threads . (,(doc-review-test--thread 1 3 "sin una revisión formal suficiente"
                                                     "Cite una fuente.\n[[elisp:(kill-emacs)]]" "01-introduccion")
-                      ,(revision-tesis-test--thread 2 9 "texto que ya no existe en las fuentes" "¿Y esto?" "01-introduccion"))))
+                      ,(doc-review-test--thread 2 9 "texto que ya no existe en las fuentes" "¿Y esto?" "01-introduccion"))))
       (let ((default-directory (expand-file-name "capitulos" root)))
-        (revision-tesis-comentarios))
+        (doc-review-comentarios))
       (should (equal (cadr (car calls)) "/api/threads?status=open"))
-      (with-current-buffer revision-tesis-buffer-name
+      (with-current-buffer doc-review-buffer-name
         (let ((text (buffer-string)))
           (should (derived-mode-p 'org-mode))
           (should (string-match-p "^\\* Introducción$" text))
           (should (string-match-p "^\\*\\* p\\. 3 · v2 · Dra\\. Ana Torres Ruiz$" text))
-          (should (string-match-p ":REVISION_TESIS_ID: 1" text))
+          (should (string-match-p ":DOC_REVIEW_ID: 1" text))
           (should (string-match-p "Fuente: \\[\\[file:.*/capitulos/01-introduccion\\.org::9\\]\\[capitulos/01-introduccion\\.org:9\\]\\]" text))
           ;; Untrusted text is literal (fixed-width), never an active link.
           (should (string-match-p "^  : \\[\\[elisp:(kill-emacs)\\]\\]$" text))
@@ -243,15 +243,15 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
           (should (< (string-search "Sin ubicar" text) (string-search "¿Y esto?" text))))
         (goto-char (point-min))
         (search-forward "Cite una fuente")
-        (should (equal (revision-tesis--thread-at-point) 1)))
-      (kill-buffer revision-tesis-buffer-name))))
+        (should (equal (doc-review--thread-at-point) 1)))
+      (kill-buffer doc-review-buffer-name))))
 
-(ert-deftest revision-tesis-test-responder-y-resolver ()
-  (revision-tesis-test--mock '((thread . ((id . 7))))
-    (cl-letf (((symbol-function 'revision-tesis--after-change) #'ignore))
-      (revision-tesis-responder 7 "Gracias, lo corrijo.")
-      (revision-tesis-resolver 7)
-      (revision-tesis-resolver 7 t))
+(ert-deftest doc-review-test-responder-y-resolver ()
+  (doc-review-test--mock '((thread . ((id . 7))))
+    (cl-letf (((symbol-function 'doc-review--after-change) #'ignore))
+      (doc-review-responder 7 "Gracias, lo corrijo.")
+      (doc-review-resolver 7)
+      (doc-review-resolver 7 t))
     (setq calls (nreverse calls))
     (should (equal (nth 0 calls)
                    (list "POST" "/api/threads/7/comments"
@@ -259,39 +259,39 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
                          "application/json")))
     (should (equal (cadr (nth 1 calls)) "/api/threads/7/resolve"))
     (should (equal (cadr (nth 2 calls)) "/api/threads/7/reopen"))
-    (should-error (revision-tesis-responder 7 "   ") :type 'user-error)))
+    (should-error (doc-review-responder 7 "   ") :type 'user-error)))
 
-(ert-deftest revision-tesis-test-publicar ()
-  (revision-tesis-test--with-thesis
+(ert-deftest doc-review-test-publicar ()
+  (doc-review-test--with-thesis
     (with-temp-file (expand-file-name "tesis.pdf" root) (insert "%PDF-1.4 x"))
     (with-temp-file (expand-file-name "avance.json" root) (insert "{\"schema\":1}"))
-    (revision-tesis-test--mock '((version . ((number . 3) (page_count . 120))) (url . "https://r.example/v/3"))
+    (doc-review-test--mock '((version . ((number . 3) (page_count . 120))) (url . "https://r.example/v/3"))
       (let ((default-directory (expand-file-name "capitulos" root)))
-        (revision-tesis-publicar "Nota"))
+        (doc-review-publicar "Nota"))
       (let ((call (car calls)))
         (should (equal (nth 0 call) "POST"))
         (should (equal (nth 1 call) "/api/versions"))
-        (should (string-prefix-p "multipart/form-data; boundary=revision-tesis-" (nth 3 call)))
+        (should (string-prefix-p "multipart/form-data; boundary=doc-review-" (nth 3 call)))
         (should (string-search "%PDF-1.4 x" (nth 2 call)))
         (should (string-search "{\"schema\":1}" (nth 2 call)))
         (should (string-search "name=\"note\"\r\n\r\nNota\r\n" (nth 2 call)))))))
 
-(ert-deftest revision-tesis-test-publicar-sin-pdf ()
-  (revision-tesis-test--with-thesis
-    (revision-tesis-test--mock nil
+(ert-deftest doc-review-test-publicar-sin-pdf ()
+  (doc-review-test--with-thesis
+    (doc-review-test--mock nil
       (let ((default-directory root))
-        (should-error (revision-tesis-publicar "x") :type 'user-error))
+        (should-error (doc-review-publicar "x") :type 'user-error))
       (should-not calls))))
 
 ;;; Flymake
 
-(ert-deftest revision-tesis-test-flymake-diagnostics ()
+(ert-deftest doc-review-test-flymake-diagnostics ()
   (with-temp-buffer
-    (insert revision-tesis-test--chapter)
+    (insert doc-review-test--chapter)
     (org-mode)
-    (let* ((threads (list (revision-tesis-test--thread 5 3 "sin una revisión formal suficiente" "Cite una fuente.")
-                          (revision-tesis-test--thread 6 3 "no está en este archivo para nada" "x")))
-           (diags (revision-tesis--buffer-diagnostics threads)))
+    (let* ((threads (list (doc-review-test--thread 5 3 "sin una revisión formal suficiente" "Cite una fuente.")
+                          (doc-review-test--thread 6 3 "no está en este archivo para nada" "x")))
+           (diags (doc-review--buffer-diagnostics threads)))
       (should (= (length diags) 1))
       (let ((d (car diags)))
         (should (eq (flymake-diagnostic-type d) :note))
@@ -301,14 +301,14 @@ Un \\gls{LLM} /local/ procesa los datos de viajes sin que salgan de la organizac
         (should (string-match-p "Dra\\. Ana Torres Ruiz (v2 p\\. 3): Cite una fuente\\."
                                 (flymake-diagnostic-text d)))))))
 
-(ert-deftest revision-tesis-test-flymake-backend-uses-cache ()
+(ert-deftest doc-review-test-flymake-backend-uses-cache ()
   (with-temp-buffer
-    (insert revision-tesis-test--chapter)
-    (let ((revision-tesis--fetched t)
-          (revision-tesis--threads (list (revision-tesis-test--thread 5 3 "sin una revisión formal suficiente" "x")))
+    (insert doc-review-test--chapter)
+    (let ((doc-review--fetched t)
+          (doc-review--threads (list (doc-review-test--thread 5 3 "sin una revisión formal suficiente" "x")))
           reported)
-      (revision-tesis-flymake (lambda (diags &rest _) (setq reported diags)))
+      (doc-review-flymake (lambda (diags &rest _) (setq reported diags)))
       (should (= (length reported) 1)))))
 
-(provide 'revision-tesis-test)
-;;; revision-tesis-test.el ends here
+(provide 'doc-review-test)
+;;; doc-review-test.el ends here

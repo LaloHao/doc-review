@@ -23,5 +23,5 @@ export function safeEqual(a: string, b: string): boolean {
 
 /** Owner tokens are prefixed so they're recognizable in a config file. */
 export function newOwnerToken(): string {
-  return `rt_owner_${newSecret(32)}`;
+  return `dr_owner_${newSecret(32)}`;
 }
