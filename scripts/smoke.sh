@@ -63,11 +63,11 @@ cat > "$THESIS/capitulos/01-introduccion.org" <<'ORG'
 :CUSTOM_ID: cap-introduccion
 :END:
 
-La analítica de datos de viajes se está incorporando con rapidez al
-planificación del transporte público. Esto genera un modelo que se integra sin una revisión
-formal suficiente y que empieza a producir rutas poco eficientes en operación
-[cite:@example2024routes]. Los equipos necesitan un método para documentar esos
-incidentes de manera trazable y reproducible.
+La analítica de datos de viajes se está incorporando con rapidez a la
+planificación del transporte público. Esto genera recomendaciones que se despliegan sin una revisión
+formal suficiente y que empiezan a producir
+[cite:@example2024routes]. Los equipos necesitan un método para documentar
+esas rutas de manera trazable y reproducible.
 ORG
 cat > "$THESIS/capitulos/02-marco-teorico.org" <<'ORG'
 * Marco teórico
@@ -154,9 +154,9 @@ ok "the owner got the new-comment email, in Spanish, with the role"
 mails owner@example.test | grep -q "New comment from Dra. Ana Torres Ruiz (Reviewer)" || fail "owner: the report's comment in English"
 ok "…and the report's comment in English"
 mails director@example.test | grep -q "Respuesta de Dr. Luis Méndez Ortega" || fail "Ana: reply email"
-ok "Ana got Luis's reply at once (he asked for instant emails)"
+ok "Ana got Luis's reply at once (she asked for instant emails)"
 mails director@example.test | grep -q "Nueva versión (v2)" || fail "Ana: version email"
-ok "Ana got the new-version email (he asked for it)"
+ok "Ana got the new-version email (she asked for it)"
 mails codirector@example.test | grep -q . && fail "Luis got email he didn't ask for"
 ok "Luis got nothing (notifications off by default)"
 if jq -r .text "$MAILS" | grep -q "/a/"; then fail "a secret link in an email"; fi

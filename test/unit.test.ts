@@ -180,7 +180,7 @@ describe("pdf", () => {
     expect(looksLikePdf(new TextEncoder().encode("<html>"))).toBe(false);
   });
   it("joins text items and undoes hyphenation", () => {
-    expect(joinTextItems([{ str: "anonimiza-", hasEOL: true }, { str: "ción de  datos" }])).toBe("generación trazable de recomendaciones de rutas");
+    expect(joinTextItems([{ str: "anonimiza-", hasEOL: true }, { str: "ción de  datos" }])).toBe("anonimización de datos");
   });
   it("parses in a worker with a time limit and a heap limit", async () => {
     await expect(extractPdf(sampleThesis(), { timeoutMs: 1 })).rejects.toMatchObject({ key: "err.pdf_timeout", params: { s: 1 } });

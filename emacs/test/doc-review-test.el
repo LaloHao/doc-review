@@ -18,7 +18,7 @@
 
 ** Antecedentes
 
-La analítica de datos de viajes se está incorporando con rapidez al
+La analítica de datos de viajes se está incorporando con rapidez a la
 planificación del transporte público. Esto genera un modelo que se integra sin una revisión
 formal suficiente [cite:@example2024routes] y que empieza a producir rutas poco eficientes.
 # Un comentario que no aparece en el PDF.
@@ -129,7 +129,7 @@ code that is not in the PDF
     (should-not (string-search "pipeline" (car index)))
     (should-not (string-search "emph" (car index)))
     (let ((hit (doc-review--locate-in-index
-                (doc-review--normalize-quote "Trip data is anonymized before it reaches the model [1], which keeps 100% of the secrets")
+                (doc-review--normalize-quote "Trip data is anonymized before it reaches the model [1], which keeps 100% of the personal data")
                 index)))
       (should hit)
       (should (string-prefix-p "Trip data is \\emph{anonymized}"
@@ -154,7 +154,7 @@ code that is not in the PDF
 (ert-deftest doc-review-test-locate-fuzzy-after-edit ()
   (let* ((index (doc-review--index-string doc-review-test--chapter))
          (q (doc-review--normalize-quote
-             "La analítica de datos de viajes se incorpora muy rápido al planificación del transporte público. Esto genera un modelo")))
+             "La analítica de datos de viajes se incorpora muy rápido a la planificación del transporte público. Esto genera un modelo")))
     (should (doc-review--locate-in-index q index))))
 
 (ert-deftest doc-review-test-locate-glossary-expansion ()

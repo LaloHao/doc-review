@@ -93,12 +93,12 @@ export function sampleThesis(v2 = false) {
     "La analítica de datos de viajes se está incorporando con rapidez a la planificación del transporte público.",
     "Esto genera recomendaciones que se despliegan sin una revisión formal suficiente y que empiezan a producir rutas poco eficientes en operación.",
     v2
-      ? "Los equipos necesitan un método para documentar esos incidentes de manera trazable y reproducible."
-      : "Los equipos necesitan un método para documentar esos incidentes.",
+      ? "Los equipos necesitan un método para documentar esas rutas de manera trazable y reproducible."
+      : "Los equipos necesitan un método para documentar esas rutas.",
     "Un sistema de recomendación combina datos de viajes, horarios, incidencias y preferencias de los usuarios.",
     "Sin embargo, los datos crudos de viajes no pueden enviarse a un modelo externo por razones de privacidad.",
   ];
-  if (v2) intro.push("Por ello se propone anonimizar los datos de viajes antes de entregarlos a un agente local.");
+  if (v2) intro.push("Por ello se propone anonimizar los datos de viajes antes de entregarlos a un modelo local.");
   const marco = [
     "Una ruta de transporte público es una secuencia ordenada de paradas servidas por una o más líneas.",
     "La anonimización consiste en reemplazar datos personales o secretos por marcadores consistentes.",

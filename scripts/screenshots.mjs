@@ -5,7 +5,7 @@
 //   BASE=http://localhost:8099 ANA_LINK=… LUIS_LINK=… OWNER_TOKEN=… CHROME=/path/to/chrome \
 //     node scripts/screenshots.mjs
 //
-// ANA_LINK is Ana's link to the English report (he also reviews the thesis);
+// ANA_LINK is Ana's link to the English report (she also reviews the thesis);
 // LUIS_LINK is Luis's link to the Spanish thesis. Fails if a page logs an
 // error (for example a CSP violation).
 
@@ -137,10 +137,10 @@ watch(h);
 await h.goto(LUIS_LINK);
 await h.goto(BASE + "/d/thesis/v/2");
 await ready(h);
-await select(h, 3, "sin una revisión", "producción");
+await select(h, 3, "sin una revisión", "operación");
 await h.waitForSelector("#selection-button:not([hidden])");
 await h.click("#selection-button");
-await h.fill("#composer-form textarea", "Convendría citar aquí algún reporte reciente de incidentes causados por código generado.");
+await h.fill("#composer-form textarea", "Convendría citar aquí algún estudio reciente sobre rutas de transporte poco eficientes.");
 await h.click("#composer-form button[type=submit]");
 await h.waitForSelector(".thread");
 await h.evaluate(() => document.querySelector(".page[data-page='3']").scrollIntoView());

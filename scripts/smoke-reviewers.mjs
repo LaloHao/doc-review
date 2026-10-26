@@ -72,7 +72,7 @@ if (step === "comment") {
   res = await luis.send("POST", `/api/threads/${thread.id}/resolve`);
   check(res.status === 403, "Luis can't resolve Ana's thread (403)");
   res = await ana.send("POST", `/api/threads/${thread.id}/resolve`);
-  check(res.status === 200 && (await res.json()).thread.resolved_by.startsWith("Dr. Ana"), "Ana resolves his thread");
+  check(res.status === 200 && (await res.json()).thread.resolved_by.startsWith("Dra. Ana"), "Ana resolves her thread");
   res = await luis.send("POST", `/api/threads/${thread.id}/reopen`);
   check(res.status === 200, "Luis reopens it");
   res = await luis.send("POST", "/api/documents/thesis/threads", { version: 1, page: 4, anchor: "point", rects: [{ x: 0.7, y: 0.3, w: 0, h: 0 }], body: "Aquí convendría una figura." });
