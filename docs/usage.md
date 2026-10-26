@@ -30,7 +30,7 @@
    ```sh
    mkdir -p ~/.config/doc-review
    cat > ~/.config/doc-review/config.json <<'JSON'
-   {"url": "https://review.hao.systems", "token": "dr_owner_…"}
+   {"url": "https://review.example.com", "token": "dr_owner_…"}
    JSON
    chmod 600 ~/.config/doc-review/config.json
    ```
@@ -39,7 +39,7 @@
    that don't start with `https://` (`http://` only for `localhost`). Tokens of
    other servers go under `"servers": {"https://other.example": "dr_owner_…"}`.
 
-3. In the browser, sign in once at `https://review.hao.systems/login` with the
+3. In the browser, sign in once at `https://review.example.com/login` with the
    token: the browser keeps a 30-day session (renewed while you use it).
 
    - **Changing the token** (`gen-token` again and the new SHA-256 in the

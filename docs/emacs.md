@@ -19,7 +19,7 @@ You need the owner token in `~/.config/doc-review/config.json`, mode 0600 (see
 [usage.md](usage.md#first-setup)):
 
 ```json
-{"url": "https://review.hao.systems", "token": "dr_owner_…"}
+{"url": "https://review.example.com", "token": "dr_owner_…"}
 ```
 
 ### Vanilla Emacs
@@ -89,7 +89,7 @@ current file or directory):
   "pdf": "tesis.pdf",
   "progress": {"command": "make avance", "file": "avance.json"},
   "sources": ["tesis.org", "capitulos/*.org"],
-  "url": "https://review.hao.systems"
+  "url": "https://review.example.com"
 }
 ```
 

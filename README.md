@@ -82,7 +82,6 @@ short guide for Spanish-speaking reviewers,
 | `public/` | Browser code: `viewer.js` (pdf.js, selection, threads), `admin.js`, `common.js`, `i18n-format.js` |
 | `emacs/` | Emacs client and its ERT tests |
 | `deploy/helm/doc-review` | Helm chart |
-| `deploy/infra-draft/` | Draft files for the private `infra`/`gitops` repos (not applied) |
 
 ### Data model
 
