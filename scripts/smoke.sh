@@ -78,7 +78,7 @@ ORG
 cp "$WORK/v1.pdf" "$THESIS/tesis.pdf"
 cp "$WORK/v1.avance.json" "$THESIS/avance.json"
 cat > "$THESIS/.doc-review.json" <<'JSON'
-{"document": "thesis", "pdf": "tesis.pdf", "progress": "avance.json",
+{"document": "thesis", "pdf": ["tesis.pdf", "build/tesis-parcial*.pdf"], "progress": "avance.json",
  "sources": ["tesis.org", "capitulos/*.org"]}
 JSON
 

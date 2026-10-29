@@ -104,7 +104,10 @@ Tokens of other servers go in \"servers\": {\"https://…\": \"token\"}."
      (command-failed . "«%s» failed (exit code %s)")
      (pdf-older . "%s is older than the sources. Publish anyway? ")
      (cancelled . "Cancelled")
-     (note-prompt . "Version note (optional): ")
+     (note-prompt . "Version note for %s (optional; M-p: previous notes): ")
+     (pdf-prompt . "PDF to publish: ")
+     (no-pdf-match . "No PDF matches \"pdf\" of %s (%s): build the document first")
+     (publishing . "Publishing %s…")
      (published . "Published version %s (%s pages): %s")
      (reply-prompt . "Reply to thread #%s: ")
      (empty-reply . "Empty reply")
@@ -159,7 +162,10 @@ Tokens of other servers go in \"servers\": {\"https://…\": \"token\"}."
      (command-failed . "Falló «%s» (código %s)")
      (pdf-older . "%s es más viejo que las fuentes. ¿Publicar de todos modos? ")
      (cancelled . "Cancelado")
-     (note-prompt . "Nota de la versión (opcional): ")
+     (note-prompt . "Nota de la versión de %s (opcional; M-p: notas anteriores): ")
+     (pdf-prompt . "PDF a publicar: ")
+     (no-pdf-match . "Ningún PDF coincide con \"pdf\" de %s (%s): compila el documento primero")
+     (publishing . "Publicando %s…")
      (published . "Publicada la versión %s (%s páginas): %s")
      (reply-prompt . "Respuesta al hilo #%s: ")
      (empty-reply . "Respuesta vacía")
@@ -309,7 +315,9 @@ pick a server, but can't send your token to another one."
          :root root
          :url (funcall str 'url)
          :document (funcall str 'document)
-         :pdf (funcall str 'pdf)
+         :pdf (let ((v (alist-get 'pdf json)))
+                (cond ((and (stringp v) (> (length v) 0)) (list v))
+                      ((listp v) (cl-remove-if-not (lambda (x) (and (stringp x) (> (length x) 0))) v))))
          :progress (alist-get 'progress json)
          :sources (cl-remove-if-not #'stringp (let ((s (alist-get 'sources json))) (and (listp s) s))))))))
 
@@ -478,16 +486,110 @@ Hidden and build directories are skipped."
       (let ((m (file-attribute-modification-time (file-attributes f))))
         (when (or (null newest) (time-less-p newest m)) (setq newest m))))))
 
+;;; Choosing the PDF
+
+(defvar doc-review-note-history nil
+  "Previous version notes (`doc-review-publish').")
+
+(defvar doc-review-pdf-history nil
+  "PDFs chosen with \[universal-argument] \[doc-review-publish].")
+
+(defun doc-review--newest-first (files)
+  "Existing regular FILES, the most recently modified first, without duplicates."
+  (let ((files (cl-remove-duplicates
+                (cl-remove-if-not #'file-regular-p (mapcar #'expand-file-name files))
+                :test #'equal)))
+    (sort files (lambda (a b)
+                  (time-less-p (file-attribute-modification-time (file-attributes b))
+                               (file-attribute-modification-time (file-attributes a)))))))
+
+(defun doc-review--project-pdf (project)
+  "The PDF to publish by default for PROJECT, or nil.
+\"pdf\" is a file or a list of files and globs (`*', `?' and `[…]' in
+names, as `file-expand-wildcards'): the most recently modified existing
+match wins.  A single plain file is returned even if it doesn't exist
+yet, so the caller can say it must be built."
+  (let* ((root (doc-review-project-root project))
+         (patterns (doc-review-project-pdf project))
+         (default-directory root))
+    (if (and (= (length patterns) 1) (not (string-match-p "[*?[]" (car patterns))))
+        (expand-file-name (car patterns) root)
+      (car (doc-review--newest-first
+            (mapcan (lambda (p)
+                      (if (string-match-p "[*?[]" p)
+                          (file-expand-wildcards p t)
+                        (list (expand-file-name p root))))
+                    patterns))))))
+
+(defun doc-review--pdf-candidates (project)
+  "PDFs to offer for PROJECT, the default first.
+The result of `tesis-pcc-ultimo-pdf' when that function exists, then the
+PDFs of the project's root and the \"pdf\" of .doc-review.json, the most
+recently modified first."
+  (let* ((root (doc-review-project-root project))
+         (helper (and (fboundp 'tesis-pcc-ultimo-pdf)
+                      (ignore-errors
+                        (let ((default-directory root)) (funcall 'tesis-pcc-ultimo-pdf)))))
+         (helper (and (stringp helper) (expand-file-name helper root)))
+         (configured (ignore-errors (doc-review--project-pdf project))))
+    (cl-remove-duplicates
+     (append (and helper (file-regular-p helper) (list helper))
+             (doc-review--newest-first
+              (append (directory-files root t "\\.[pP][dD][fF]\\'" t)
+                      (and configured (list configured)))))
+     :test #'equal :from-end t)))
+
+(defun doc-review--read-pdf (project)
+  "Ask for the PDF to publish for PROJECT (default: the first candidate)."
+  (let* ((root (doc-review-project-root project))
+         (candidates (doc-review--pdf-candidates project))
+         (file (read-file-name (doc-review--t 'pdf-prompt) root candidates t
+                               (and (car candidates) (file-relative-name (car candidates) root))
+                               (lambda (f) (or (file-directory-p f) (string-match-p "\\.[pP][dD][fF]\\'" f))))))
+    (expand-file-name file root)))
+
+(defun doc-review--note-suggestion (pdf)
+  "A note to offer with M-n for PDF: the first line of FILE.note next to it."
+  (let ((sidecar (concat (file-name-sans-extension pdf) ".note")))
+    (when (file-readable-p sidecar)
+      (with-temp-buffer
+        (insert-file-contents sidecar)
+        (let ((first (doc-review--clean-line
+                      (buffer-substring-no-properties (point-min) (line-end-position)))))
+          (and (> (length first) 0) first))))))
+
+(defun doc-review--read-note (pdf)
+  "Ask for the version note of PDF: empty by default, with history.
+M-n offers the PDF's sidecar note (FILE.note), when there is one."
+  (read-from-minibuffer (doc-review--t 'note-prompt (file-name-nondirectory pdf))
+                        nil nil nil 'doc-review-note-history
+                        (doc-review--note-suggestion pdf)))
+
+(defun doc-review--default-pdf (project)
+  "PROJECT's PDF from .doc-review.json, or a `user-error'."
+  (let ((file (expand-file-name doc-review-project-file (doc-review-project-root project))))
+    (unless (doc-review-project-pdf project)
+      (user-error (doc-review--t 'no-pdf-setting file)))
+    (or (doc-review--project-pdf project)
+        (user-error (doc-review--t 'no-pdf-match file
+                                   (string-join (doc-review-project-pdf project) ", "))))))
+
 ;;;###autoload
-(defun doc-review-publish (note)
-  "Upload the project's PDF (and progress) as a new version with NOTE."
-  (interactive (list (read-string (doc-review--t 'note-prompt))))
+(defun doc-review-publish (note &optional pdf)
+  "Upload a PDF (and the progress) as a new version with NOTE.
+The PDF is PDF, or the \"pdf\" of .doc-review.json (the newest match when
+it is a list or has globs).  Interactively, with \[universal-argument],
+ask for the file: the default is `tesis-pcc-ultimo-pdf' (when defined),
+else the most recently modified PDF of the project's root."
+  (interactive
+   (let* ((project (doc-review--project))
+          (pdf (if current-prefix-arg
+                   (doc-review--read-pdf project)
+                 (doc-review--default-pdf project))))
+     (list (doc-review--read-note pdf) pdf)))
   (let* ((project (doc-review--project))
-         (root (progn (doc-review--document project) (doc-review-project-root project)))
-         (pdf (expand-file-name (or (doc-review-project-pdf project)
-                                    (user-error (doc-review--t 'no-pdf-setting
-                                                               (expand-file-name doc-review-project-file root))))
-                                root)))
+         (pdf (progn (doc-review--document project)
+                     (or pdf (doc-review--default-pdf project)))))
     (unless (file-readable-p pdf) (user-error (doc-review--t 'no-pdf pdf)))
     (let ((newest (doc-review--newest-source-mtime project))
           (pdf-time (file-attribute-modification-time (file-attributes pdf))))
@@ -495,6 +597,7 @@ Hidden and build directories are skipped."
                  (called-interactively-p 'interactive)
                  (not (y-or-n-p (doc-review--t 'pdf-older (file-name-nondirectory pdf)))))
         (user-error (doc-review--t 'cancelled))))
+    (message "%s" (doc-review--t 'publishing (file-name-nondirectory pdf)))
     (let* ((progress (doc-review--progress-part project))
            (boundary (format "doc-review-%s" (md5 (format "%s%s" (random) (float-time)))))
            (body (doc-review--multipart

@@ -179,7 +179,7 @@ code that is not in the PDF
     (let ((p (doc-review--project (expand-file-name "capitulos" root))))
       (should (equal (doc-review-project-root p) root))
       (should (equal (doc-review-project-document p) "thesis"))
-      (should (equal (doc-review-project-pdf p) "tesis.pdf"))
+      (should (equal (doc-review-project-pdf p) '("tesis.pdf")))
       (should (equal (mapcar (lambda (f) (file-relative-name f root)) (doc-review--source-files p))
                      '("capitulos/01-introduccion.org" "capitulos/02-marco.org" "tesis.org")))
       (should (doc-review--source-p p (expand-file-name "capitulos/02-marco.org" root)))
@@ -448,6 +448,94 @@ code that is not in the PDF
       (let ((default-directory root))
         (should-error (doc-review-publish "x") :type 'user-error))
       (should-not calls))))
+
+;;; Choosing the PDF
+
+(defun doc-review-test--pdf (root rel seconds-ago)
+  "Create ROOT/REL as a tiny PDF modified SECONDS-AGO seconds ago."
+  (let ((f (expand-file-name rel root)))
+    (make-directory (file-name-directory f) t)
+    (with-temp-file f (insert "%PDF-1.4 " rel))
+    (set-file-times f (time-subtract (current-time) seconds-ago))
+    f))
+
+(ert-deftest doc-review-test-pdf-list-and-globs ()
+  ;; "pdf" as a list of files and globs: the newest existing match.
+  (doc-review-test--with-project
+      "{\"document\": \"d\", \"pdf\": [\"tesis.pdf\", \"build/tesis-parcial*.pdf\", 3, \"\"]}"
+    (doc-review-test--pdf root "tesis.pdf" 300)
+    (doc-review-test--pdf root "build/tesis-parcial-intro.pdf" 100)
+    (doc-review-test--pdf root "build/tesis-parcial-marco.pdf" 200)
+    (doc-review-test--pdf root "build/otro.pdf" 5)
+    (let ((p (doc-review--project root)))
+      (should (equal (doc-review-project-pdf p) '("tesis.pdf" "build/tesis-parcial*.pdf")))
+      (should (equal (doc-review--project-pdf p) (expand-file-name "build/tesis-parcial-intro.pdf" root)))
+      (doc-review-test--mock '((version . ((number . 4))))
+        (let ((default-directory root)) (doc-review-publish "Avance"))
+        (should (string-search "filename=\"tesis-parcial-intro.pdf\"" (nth 2 (car calls)))))
+      (doc-review-test--pdf root "tesis.pdf" 1)
+      (should (equal (doc-review--project-pdf p) (expand-file-name "tesis.pdf" root)))))
+  ;; Nothing matches: a clear error, nothing sent.
+  (doc-review-test--with-project "{\"document\": \"d\", \"pdf\": [\"out/*.pdf\"]}"
+    (doc-review-test--mock nil
+      (let ((default-directory root))
+        (should (string-match-p "No PDF matches"
+                                (cadr (should-error (doc-review-publish "") :type 'user-error)))))
+      (should-not calls)))
+  ;; A single plain file is used as is (and reported missing if it is).
+  (doc-review-test--with-project doc-review-test--json
+    (let ((p (doc-review--project root)))
+      (should (equal (doc-review--project-pdf p) (expand-file-name "tesis.pdf" root))))))
+
+(ert-deftest doc-review-test-publish-choose-pdf ()
+  ;; C-u: the default is `tesis-pcc-ultimo-pdf' when defined, else the newest PDF of the root.
+  (doc-review-test--with-project doc-review-test--json
+    (doc-review-test--pdf root "tesis.pdf" 300)
+    (doc-review-test--pdf root "tesis-parcial.pdf" 10)
+    (doc-review-test--pdf root "build/de-la-funcion.pdf" 100)
+    (with-temp-file (expand-file-name "avance.json" root) (insert "{\"schema\":1}"))
+    (with-temp-file (expand-file-name "tesis-parcial.note" root) (insert "Avance parcial: Introducción\nmás texto\n"))
+    (let ((default-directory root)
+          (doc-review-note-history '("Una nota anterior"))
+          offered note-args)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'read-file-name)
+                 (lambda (_prompt dir default &rest _)
+                   (setq offered (list dir default))
+                   (car default)))
+                ((symbol-function 'read-from-minibuffer)
+                 (lambda (prompt _initial _keymap _read hist default)
+                   (setq note-args (list prompt hist default))
+                   "Nota elegida")))
+        (should-not (fboundp 'tesis-pcc-ultimo-pdf))
+        (setq offered nil)
+        (doc-review-test--mock '((version . ((number . 5))))
+          (let ((current-prefix-arg '(4)))
+            (call-interactively #'doc-review-publish))
+          (should (equal (car offered) root))
+          (should (equal (car (cadr offered)) (expand-file-name "tesis-parcial.pdf" root)))
+          (should (member (expand-file-name "tesis.pdf" root) (cadr offered)))
+          (should (string-search "filename=\"tesis-parcial.pdf\"" (nth 2 (car calls))))
+          (should (string-search "name=\"note\"\r\n\r\nNota elegida\r\n" (nth 2 (car calls))))
+          ;; The note: empty by default, with history; M-n offers the sidecar note.
+          (should (string-search "tesis-parcial.pdf" (nth 0 note-args)))
+          (should (eq (nth 1 note-args) 'doc-review-note-history))
+          (should (equal (nth 2 note-args) "Avance parcial: Introducción")))
+        ;; With the thesis helper, its PDF comes first.
+        (cl-letf (((symbol-function 'tesis-pcc-ultimo-pdf)
+                   (lambda () (expand-file-name "build/de-la-funcion.pdf" root))))
+          (doc-review-test--mock '((version . ((number . 6))))
+            (let ((current-prefix-arg '(4)))
+              (call-interactively #'doc-review-publish))
+            (should (equal (car (cadr offered)) (expand-file-name "build/de-la-funcion.pdf" root)))
+            (should (string-search "filename=\"de-la-funcion.pdf\"" (nth 2 (car calls))))
+            (should-not (nth 2 note-args))))
+        ;; Without C-u: the "pdf" of .doc-review.json, no question about the file.
+        (setq offered nil)
+        (doc-review-test--mock '((version . ((number . 7))))
+          (call-interactively #'doc-review-publish)
+          (should-not offered)
+          (should (string-search "filename=\"tesis.pdf\"" (nth 2 (car calls)))))))))
 
 (ert-deftest doc-review-test-list-documents-and-browser ()
   (doc-review-test--with-project doc-review-test--json

@@ -6,9 +6,9 @@
 // token for it must be in config.json (a repository can't send your token
 // elsewhere).
 
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { cleanText } from "./text.js";
 
 export interface ClientConfig {
@@ -87,7 +87,8 @@ export interface ProjectConfig {
   root: string;
   url?: string;
   document?: string;
-  pdf?: string;
+  /** A file, or files and globs (`*`, `?` in the file name): the newest match is published. */
+  pdf?: string | string[];
   progress?: string | { command?: string; file?: string };
   sources?: string[];
 }
@@ -118,7 +119,7 @@ export async function findProjectConfig(dir = process.cwd()): Promise<ProjectCon
         root: d,
         url: s("url"),
         document: s("document"),
-        pdf: s("pdf"),
+        pdf: Array.isArray(raw.pdf) ? raw.pdf.filter((x): x is string => typeof x === "string" && x !== "") : s("pdf"),
         progress:
           typeof progress === "string" || (progress && typeof progress === "object")
             ? (progress as ProjectConfig["progress"])
@@ -130,6 +131,36 @@ export async function findProjectConfig(dir = process.cwd()): Promise<ProjectCon
     if (up === d) return null;
     d = up;
   }
+}
+
+const globRe = (glob: string) =>
+  new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")}$`);
+
+/**
+ * The PDF to publish from a project's "pdf": a file, or a list of files and
+ * globs (wildcards in the file name only, e.g. "build/tesis-parcial*.pdf"), of
+ * which the most recently modified existing one wins. A single plain file is
+ * returned even if it doesn't exist yet (the caller reports it); null when
+ * nothing matches.
+ */
+export async function projectPdf(proj: ProjectConfig): Promise<string | null> {
+  const patterns = proj.pdf === undefined ? [] : Array.isArray(proj.pdf) ? proj.pdf : [proj.pdf];
+  const abs = (p: string) => (isAbsolute(p) ? p : join(proj.root, p));
+  if (patterns.length === 1 && !/[*?]/.test(patterns[0]!)) return abs(patterns[0]!);
+  let best: { path: string; mtime: number } | null = null;
+  for (const pattern of patterns) {
+    const full = abs(pattern);
+    let files: string[];
+    if (/[*?]/.test(basename(full))) {
+      const re = globRe(basename(full));
+      files = (await readdir(dirname(full)).catch(() => [] as string[])).filter((f) => re.test(f)).map((f) => join(dirname(full), f));
+    } else files = [full];
+    for (const f of files) {
+      const st = await stat(f).catch(() => null);
+      if (st?.isFile() && (!best || st.mtimeMs > best.mtime)) best = { path: f, mtime: st.mtimeMs };
+    }
+  }
+  return best?.path ?? null;
 }
 
 export class ApiError extends Error {

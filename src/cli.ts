@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { access, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseArgs, promisify } from "node:util";
-import { ApiError, Client, findProjectConfig, loadClientConfig, type ProjectConfig } from "./client.js";
+import { ApiError, Client, findProjectConfig, loadClientConfig, projectPdf, type ProjectConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
 import { fmtThread, oneLine } from "./format.js";
@@ -35,6 +35,7 @@ Documents:
 Versions and comments:
   doc-review publish [FILE.pdf] [PROGRESS.json] [-m NOTE] [-d DOC]
                                        without files: "pdf" and "progress" of .doc-review.json
+                                       ("pdf" may be a list of files and globs: the newest match)
   doc-review comments [-d DOC] [--version N|latest] [--all] [--json]
   doc-review progress ROOT.org [-o progress.json]   progress.json from the #+INCLUDE files
 
@@ -249,8 +250,11 @@ async function main(argv: string[]): Promise<number> {
       let [pdf, progressFile] = positionals;
       let progress: { path: string } | { json: string } | null = progressFile ? { path: progressFile } : null;
       if (!pdf) {
-        if (!proj?.pdf) throw new Error("usage: doc-review publish FILE.pdf [PROGRESS.json] [-m NOTE] [-d DOC] (or \"pdf\" in .doc-review.json)");
-        pdf = isAbsolute(proj.pdf) ? proj.pdf : join(proj.root, proj.pdf);
+        if (!proj?.pdf?.length) throw new Error("usage: doc-review publish FILE.pdf [PROGRESS.json] [-m NOTE] [-d DOC] (or \"pdf\" in .doc-review.json)");
+        const found = await projectPdf(proj);
+        if (!found) throw new Error(`no PDF matches "pdf" in .doc-review.json (${[proj.pdf].flat().join(", ")}): build the document first`);
+        pdf = found;
+        if (Array.isArray(proj.pdf) || /[*?]/.test(proj.pdf)) console.log(`publishing ${pdf} (the newest match of "pdf")`);
         progress = await projectProgress(proj);
       }
       const c = await client(values, proj);

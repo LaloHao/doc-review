@@ -96,7 +96,7 @@ current file or directory):
 | Key | | |
 |---|---|---|
 | `document` | required | The document's short name on the server |
-| `pdf` | for publishing | The built PDF, relative to the root |
+| `pdf` | for publishing | The built PDF, relative to the root; or a list of files and globs (`["tesis.pdf", "build/tesis-parcial*.pdf"]`): the most recently modified existing match is published |
 | `progress` | optional | A file (`"avance.json"`), a shell command that prints progress.json (`"doc-review progress tesis.org"`), or `{"command": …, "file": …}` (run the command in the root, then send the file) |
 | `sources` | optional | Globs of the source files, relative to the root (`*`, `?` and `**/`); default `**/*.org`, `**/*.tex`, `**/*.md`. Hidden directories are skipped |
 | `url` | optional | The server; default the one in `config.json`. Its token must be in `config.json` (`"servers": {"https://…": "dr_owner_…"}`): a project file can't send your token to another server |
@@ -116,7 +116,7 @@ Examples:
 
 | Command | Vanilla | Doom | |
 |---|---|---|---|
-| `doc-review-publish` | `C-c d p` | `SPC m z p` | Upload the PDF (and progress) as a new version; asks for a note; warns if the PDF is older than the sources |
+| `doc-review-publish` | `C-c d p` | `SPC m z p` | Upload the PDF (and progress) as a new version; asks for a note; warns if the PDF is older than the sources. `C-u`: choose the PDF (see below) |
 | `doc-review-comments` | `C-c d c` | `SPC m z c` | The open threads in an org buffer (`C-u`: all, resolved too) |
 | `doc-review-reply` | `C-c d r` | `SPC m z r` | Reply to the thread at point (a heading of the comments buffer, a Flymake note, or chosen from a list) |
 | `doc-review-resolve` | `C-c d x` | `SPC m z x` | Mark the thread at point resolved (`C-u`: reopen) |
@@ -125,6 +125,23 @@ Examples:
 | `doc-review-mode` | `C-c d m` | `SPC m z m` | Toggle the Flymake notes in this buffer |
 | `doc-review-list-documents` | `C-c d l` | `SPC m z l` | Your documents on the server (RET: open in the browser, `g`: refresh) |
 | `doc-review-open-in-browser` | `C-c d b` | `SPC m z b` | The thread at point, or the document (`C-u`: its management page) |
+
+### Which PDF gets published
+
+- By default, the `pdf` of `.doc-review.json`; when it is a list or has globs,
+  the newest existing match (the echo area says which file is being sent).
+- With `C-u`, Emacs asks for the file, starting in the project's root. The
+  default (`RET`) is the result of `tesis-pcc-ultimo-pdf` when that function is
+  defined (a thesis template's «latest PDF»), else the most recently modified
+  PDF of the root; `M-n` walks through the other PDFs of the root and the
+  configured one, newest first.
+- The version note is empty by default; `M-p` brings back previous notes
+  (`doc-review-note-history`, which `savehist-mode` can keep). If a file
+  `NAME.note` sits next to `NAME.pdf`, `M-n` offers its first line (for
+  example `tesis-parcial.note` with «Avance parcial: Introducción»).
+
+The CLI's `doc-review publish` (without a file) picks the PDF the same way as
+without `C-u`.
 
 Messages are in English by default; `(setq doc-review-language 'es)` for
 Spanish (the server's error messages follow the same setting).

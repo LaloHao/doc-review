@@ -408,4 +408,31 @@ describe("client configuration", () => {
     expect(p).toMatchObject({ root: dir, document: "thesis", pdf: "tesis.pdf", progress: { command: "make avance", file: "avance.json" }, sources: ["capitulos/*.org"] });
     expect(await findProjectConfig(tmpdir())).toBeNull();
   });
+
+  it("\"pdf\" may be a list of files and globs: the newest existing match is published", async () => {
+    const { findProjectConfig, projectPdf } = await import("../src/client.js");
+    const { utimes, writeFile: wf } = await import("node:fs/promises");
+    const dir = await mkdtemp(join(tmpdir(), "dr-pdf-"));
+    await mkdir(join(dir, "build"));
+    const touch = async (rel: string, secondsAgo: number) => {
+      await wf(join(dir, rel), "%PDF-1.4");
+      const t = new Date(Date.now() - secondsAgo * 1000);
+      await utimes(join(dir, rel), t, t);
+    };
+    await touch("tesis.pdf", 300);
+    await touch("build/tesis-parcial-intro.pdf", 100);
+    await touch("build/tesis-parcial-marco.pdf", 200);
+    await touch("build/otro.pdf", 10);
+    await write(dir, ".doc-review.json", { document: "thesis", pdf: ["tesis.pdf", "build/tesis-parcial*.pdf", 3] });
+    const p = (await findProjectConfig(dir))!;
+    expect(p.pdf).toEqual(["tesis.pdf", "build/tesis-parcial*.pdf"]);
+    expect(await projectPdf(p)).toBe(join(dir, "build/tesis-parcial-intro.pdf"));
+    await touch("tesis.pdf", 1);
+    expect(await projectPdf(p)).toBe(join(dir, "tesis.pdf"));
+    // A single file is returned as is, even before it exists; no match is null.
+    expect(await projectPdf({ root: dir, pdf: "missing.pdf" })).toBe(join(dir, "missing.pdf"));
+    expect(await projectPdf({ root: dir, pdf: ["nope*.pdf", "missing.pdf"] })).toBeNull();
+    expect(await projectPdf({ root: dir, pdf: "build/tesis-parcial-m?rco.pdf" })).toBe(join(dir, "build/tesis-parcial-marco.pdf"));
+    expect(await projectPdf({ root: dir, pdf: "build/*.pdf" })).toBe(join(dir, "build/otro.pdf"));
+  });
 });

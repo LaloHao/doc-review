@@ -240,7 +240,7 @@ refreshes `docs/images/`.
 |---|---|
 | `~/.config/doc-review/config.json` | `{"url": "https://…", "token": "dr_owner_…"}`, mode 0600; tokens of other servers in `"servers": {"https://…": "dr_owner_…"}` |
 | `DOC_REVIEW_CONFIG` | Another path for that file (`XDG_CONFIG_HOME` is honored) |
-| `.doc-review.json` | A project: `{"document", "pdf", "progress", "sources", "url"}` (see [docs/emacs.md](docs/emacs.md#the-project-file-doc-reviewjson)) |
+| `.doc-review.json` | A project: `{"document", "pdf", "progress", "sources", "url"}`; `pdf` may be a list of files and globs (the newest match is published) (see [docs/emacs.md](docs/emacs.md#the-project-file-doc-reviewjson)) |
 | `DOC_REVIEW_DOCUMENT` | Default document of the CLI (after `-d`, before `.doc-review.json`) |
 
 ### Helm chart values (`deploy/helm/doc-review`)
