@@ -35,6 +35,8 @@ export interface Person {
   notify_replies: ReplyNotify;
   created_at: Date;
   last_seen_at: Date | null;
+  /** Archived: every invitation revoked, hidden from the owner's lists. */
+  archived_at: Date | null;
 }
 
 export interface Invitation {
@@ -146,7 +148,7 @@ export interface DocumentSummary {
 }
 
 const DOC_COLS = "id, slug, title, language, visibility, default_role, archived_at, created_at";
-const PERSON_COLS = "id, name, email, notify_versions, notify_replies, created_at, last_seen_at";
+const PERSON_COLS = "id, name, email, notify_versions, notify_replies, created_at, last_seen_at, archived_at";
 const INV_COLS = "id, document_id, person_id, role, created_at, rotated_at, revoked_at, last_seen_at";
 const prefixed = (cols: string, p: string) =>
   cols
@@ -280,8 +282,11 @@ export class Repo {
     return p!;
   }
 
-  listPeople(): Promise<Person[]> {
-    return this.db.query<Person>(`select ${PERSON_COLS} from people order by lower(name), id`);
+  /** People, by name; archived ones only when asked. */
+  listPeople(opts: { archived?: boolean } = {}): Promise<Person[]> {
+    return this.db.query<Person>(
+      `select ${PERSON_COLS} from people ${opts.archived ? "" : "where archived_at is null"} order by lower(name), id`,
+    );
   }
 
   async getPerson(id: number): Promise<Person | null> {
@@ -298,6 +303,56 @@ export class Repo {
       [id, n.name, n.email, n.notify_versions, n.notify_replies],
     );
     return p ?? null;
+  }
+
+  /** Comments (deleted ones too) written by the person: they can't be deleted then. */
+  async personComments(id: number): Promise<number> {
+    const [r] = await this.db.query<{ n: number }>("select count(*)::int as n from comments where person_id = $1", [id]);
+    return r?.n ?? 0;
+  }
+
+  /**
+   * Deletes a person who never wrote a comment, with their invitations and
+   * sessions. "has_comments" if they did (archive them instead).
+   */
+  async deletePerson(id: number): Promise<"deleted" | "not_found" | "has_comments"> {
+    return this.db.tx(async (q) => {
+      const [p] = await q.query<{ id: number }>("select id from people where id = $1 for update", [id]);
+      if (!p) return "not_found";
+      const [used] = await q.query<{ x: number }>(
+        `select 1 as x where exists (select 1 from comments where person_id = $1)
+            or exists (select 1 from threads where person_id = $1 or resolved_by_person_id = $1)`,
+        [id],
+      );
+      if (used) return "has_comments";
+      const invs = "select id from invitations where person_id = $1";
+      await q.query(`delete from reviewer_digest_runs where invitation_id in (${invs})`, [id]);
+      await q.query(`delete from sessions where id_hash in (select session_id_hash from session_invitations where invitation_id in (${invs}))`, [id]);
+      await q.query("delete from sessions where person_id = $1", [id]);
+      await q.query("delete from invitations where person_id = $1", [id]);
+      await q.query("delete from people where id = $1", [id]);
+      return "deleted";
+    });
+  }
+
+  /**
+   * Archives a person (or brings them back, `archived` false): archiving revokes
+   * every invitation and ends their sessions. Unarchiving leaves the invitations
+   * revoked; each one is reactivated with a new link.
+   */
+  async setPersonArchived(id: number, archived: boolean): Promise<Person | null> {
+    return this.db.tx(async (q) => {
+      const [p] = await q.query<Person>(
+        `update people set archived_at = ${archived ? "coalesce(archived_at, now())" : "null"} where id = $1 returning ${PERSON_COLS}`,
+        [id],
+      );
+      if (!p) return null;
+      if (archived) {
+        await q.query("update invitations set revoked_at = coalesce(revoked_at, now()) where person_id = $1", [id]);
+        await q.query("delete from sessions where person_id = $1", [id]);
+      }
+      return p;
+    });
   }
 
   // --- invitations ---

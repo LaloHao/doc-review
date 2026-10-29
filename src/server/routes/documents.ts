@@ -72,6 +72,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
       ownerDashboard(app.layout(c, tr, tr("dash.title")), {
         summaries: await repo.documentSummaries(),
         people: await repo.listPeople(),
+        archivedPeople: (await repo.listPeople({ archived: true })).filter((p) => p.archived_at),
         invitations: await repo.allInvitations(),
         channels: { ...notifier.enabled, digestHour: config.digestHour, timeZone: config.timeZone },
       }),

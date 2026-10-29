@@ -148,7 +148,13 @@ expiry, at most once an hour).
 ## Notifications
 
 - Emails to reviewers never include their personal link, except the one the owner
-  explicitly sends («Send the link by email»).
+  explicitly sends («Send the link by email» when inviting, or «Email a new
+  link», which asks for confirmation and names the address). Since only a hash
+  of each link is stored, emailing a link always means a new one; the request is
+  refused before anything changes if the person has no address or SMTP is off,
+  so a working link is never invalidated for an email that can't go out.
+- Deleting a person is only possible if they never wrote a comment; otherwise
+  they are archived: every invitation revoked and every session ended at once.
 - Messages link to the thread on the public URL; they carry excerpts, never
   secrets.
 - Failures are logged without credentials and never fail a request; digests are

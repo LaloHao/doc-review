@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { access, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseArgs, promisify } from "node:util";
-import { Client, findProjectConfig, loadClientConfig, type ProjectConfig } from "./client.js";
+import { ApiError, Client, findProjectConfig, loadClientConfig, type ProjectConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
 import { fmtThread, oneLine } from "./format.js";
@@ -39,9 +39,12 @@ Versions and comments:
   doc-review progress ROOT.org [-o progress.json]   progress.json from the #+INCLUDE files
 
 Reviewers:
-  doc-review people list
+  doc-review people list [--archived]               --archived: archived people too
   doc-review people add "Name" [--email E] [--replies instant|daily|never] [--versions]
   doc-review people set ID [--name N] [--email E] [--replies instant|daily|never] [--versions | --no-versions]
+                                       --email "" removes the address
+  doc-review people remove ID                        delete someone who never commented (with their invitations)
+  doc-review people archive ID | unarchive ID        revoke every invitation and hide them / list them again
   doc-review invite [-d DOC] (--person ID | "Name" [--email E]) [--role ROLE] [--send-link]
   doc-review invitations list [-d DOC]
   doc-review invitations role ID "Role"
@@ -117,6 +120,7 @@ interface Person {
   email: string | null;
   notify_replies: string;
   notify_versions: boolean;
+  archived?: boolean;
   invitations?: { id: number; document: string; role: string; active: boolean }[];
 }
 interface Inv {
@@ -274,15 +278,33 @@ async function main(argv: string[]): Promise<number> {
         replies: { type: "string" },
         versions: { type: "boolean" },
         "no-versions": { type: "boolean" },
+        archived: { type: "boolean" },
       });
       const c = await client(values, await project());
       const show = (p: Person) => console.log(`person ${p.id}: ${oneLine(p.name)}${p.email ? ` <${oneLine(p.email)}>` : ""} (replies: ${p.notify_replies}, versions: ${p.notify_versions ? "yes" : "no"})`);
       if (sub === "list") {
-        const { people } = await c.request<{ people: Person[] }>("GET", "/api/people");
+        const { people } = await c.request<{ people: Person[] }>("GET", `/api/people${values.archived ? "?archived=1" : ""}`);
         console.log(line("ID", "NAME", "EMAIL", "REPLIES", "VERSIONS", "DOCUMENTS"));
         for (const p of people) {
           const docs = (p.invitations ?? []).map((i) => `${i.document}${i.role ? `:${i.role}` : ""}${i.active ? "" : "(revoked)"}`).join(", ");
-          console.log(line(p.id, p.name, p.email ?? "", p.notify_replies, p.notify_versions ? "yes" : "no", docs));
+          console.log(line(p.id, `${p.name}${p.archived ? " (archived)" : ""}`, p.email ?? "", p.notify_replies, p.notify_versions ? "yes" : "no", docs));
+        }
+        return 0;
+      }
+      if (sub === "remove" || sub === "archive" || sub === "unarchive") {
+        const id = Number(positionals[0]);
+        if (!Number.isInteger(id) || id < 1) throw new Error(`usage: doc-review people ${sub} ID`);
+        if (sub === "remove") {
+          try {
+            await c.request("DELETE", `/api/people/${id}`);
+          } catch (e) {
+            if (e instanceof ApiError && e.status === 409) throw new Error(`${e.message} (doc-review people archive ${id})`);
+            throw e;
+          }
+          console.log(`person ${id} deleted`);
+        } else {
+          const r = await c.json<{ person: Person }>("POST", `/api/people/${id}/${sub}`, {});
+          console.log(`person ${id} ${sub}d: ${oneLine(r.person.name)}${sub === "archive" ? " (every invitation revoked)" : " (invitations stay revoked: invitations rotate ID reactivates one)"}`);
         }
         return 0;
       }

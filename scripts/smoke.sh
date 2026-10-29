@@ -162,6 +162,24 @@ ok "Luis got nothing (notifications off by default)"
 if jq -r .text "$MAILS" | grep -q "/a/"; then fail "a secret link in an email"; fi
 ok "no email carries a personal link"
 
+step "CLI: people (edit the email, delete someone who never commented, archive someone who did)"
+OOPS_ID=$($CLI people add "Invitado por error" | sed -n 's/^person \([0-9]*\):.*/\1/p')
+$CLI invite -d report --person "$OOPS_ID" > /dev/null
+$CLI people set "$OOPS_ID" --email oops@example.test | grep -q "<oops@example.test>" || fail "people set --email"
+$CLI people set "$OOPS_ID" --email "" | grep -q "<" && fail "people set --email \"\" keeps the address"
+$CLI people remove "$OOPS_ID"
+$CLI people list | grep -q "Invitado por error" && fail "a deleted person is still listed"
+ok "a person without comments was deleted"
+LUIS_ID=$($CLI people list | awk -F'\t' '$2 ~ /Luis/ {print $1}')
+if $CLI people remove "$LUIS_ID" 2> "$WORK/remove.err"; then fail "deleted someone with comments"; fi
+grep -q "people archive $LUIS_ID" "$WORK/remove.err" || fail "remove doesn't point to archive"
+$CLI people archive "$LUIS_ID"
+$CLI people list | grep -q "Luis" && fail "an archived person is still listed"
+$CLI people list --archived | grep -q "Luis Méndez Ortega (archived)" || fail "people list --archived"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/a/${LUIS##*/}")" = 404 ] || fail "an archived person's link still works"
+$CLI people unarchive "$LUIS_ID"
+ok "someone with comments can only be archived; their link stopped working"
+
 step "server log (no secrets expected)"
 cat "$WORK/server.log"
 for secret in "$TOKEN" "${ANA_THESIS##*/}" "${ANA_REPORT##*/}" "${LUIS##*/}"; do

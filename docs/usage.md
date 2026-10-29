@@ -5,6 +5,7 @@
   - [Documents](#documents)
   - [Publishing a version](#publishing-a-version)
   - [Inviting reviewers](#inviting-reviewers)
+  - [People](#people)
   - [Reading and answering comments](#reading-and-answering-comments)
   - [Notifications: Telegram and email](#notifications-telegram-and-email)
 - [For reviewers](#for-reviewers) (and a text to send them)
@@ -157,8 +158,39 @@ link**, shown **only once**; the server keeps only a hash.
 - **Revoke**: ends the access to that document at once.
   `doc-review invitations revoke ID`. «Reactivate with a new link» enables it
   again with a different link.
+- **Email a new link**: for someone with an email address, «Email a new link»
+  creates a new link and sends it to them (after a confirmation that names the
+  address; the old link stops working). Only the hash of a link is stored, so
+  the current one can't be re-sent. Nothing changes if the person has no address
+  or the server has no SMTP. `doc-review invitations rotate ID --send-link`.
 - **Role**: the «Role» button or `doc-review invitations role ID "Co-director"`.
+- **State**: each invitation shows «Active» (the link was opened), «Not opened
+  yet» or «Revoked», with the dates it was created, given a new link and
+  revoked.
 - `doc-review invitations list -d SLUG` shows the ids.
+
+### People
+
+Each person has a page (click their name on the dashboard or in a document's
+reviewers, or «Edit person»), with:
+
+- **Name, email and notifications**: add, change or remove (leave it empty) the
+  email address, and set the reply emails (at once, daily digest, never) and the
+  emails about new versions. From a shell:
+  `doc-review people set ID --email ana@example.org`, `--email ""` to remove
+  it, `--name "…"`, `--replies daily`, `--versions` / `--no-versions`.
+- **Their invitations** to every document, with the same state and actions as
+  on the document's page.
+- **Delete**: only for someone who never commented (for example, invited by
+  mistake); their invitations go too. `doc-review people remove ID`.
+- **Archive**: for someone who commented and no longer reviews. Every invitation
+  is revoked at once (links and sessions stop working), they disappear from the
+  dashboard's list and the documents' reviewers, and their comments stay.
+  Archived people are listed apart on the dashboard («N archived people») and
+  can't be invited or get a new link until they are **unarchived**; unarchiving
+  doesn't reactivate any invitation (reactivate each one with a new link).
+  `doc-review people archive ID` / `unarchive ID`;
+  `doc-review people list --archived` lists them too.
 
 When a reviewer opens a link, their browser keeps a session (180 days, renewed
 while used) and the address changes to the document, so the secret doesn't stay
@@ -167,8 +199,8 @@ their links lists every document they were invited to. If the browser had
 someone else's session (yours, if you try a link yourself), it asks «Sign in as
 …?» first.
 
-**Notification preferences** are the person's (the dashboard's People section,
-`doc-review people set ID --replies instant|daily|never --versions`, or the
+**Notification preferences** are the person's (their page, the dashboard's
+People section, `doc-review people set ID --replies instant|daily|never --versions`, or the
 reviewer's own «Notifications» page):
 
 - when someone else replies in a thread they opened or replied to: an email **at

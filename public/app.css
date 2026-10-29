@@ -61,7 +61,7 @@ fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 1r
 fieldset label { display: flex; gap: 0.5rem; align-items: center; }
 
 input, textarea, select, button { font: inherit; }
-input[type=text], input[type=password], input[type=email], textarea, select {
+input:not([type]), input[type=text], input[type=password], input[type=email], textarea, select {
   border: 1px solid var(--line); border-radius: 6px; padding: 0.45rem 0.6rem; background: #fff; color: var(--fg); width: 100%;
 }
 select { width: auto; }
@@ -72,6 +72,10 @@ button {
 }
 button:disabled { opacity: 0.6; cursor: wait; }
 button.secondary { background: #fff; color: var(--accent); }
+a.button {
+  display: inline-block; border: 1px solid var(--accent); border-radius: 6px; padding: 0.4rem 0.9rem;
+  background: #fff; color: var(--accent); text-decoration: none;
+}
 button.danger { background: #fff; color: var(--minus); border-color: var(--minus); }
 button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
 button.link.danger { color: var(--minus); }
@@ -96,6 +100,7 @@ progress { width: 6rem; vertical-align: middle; }
 
 .box { margin-top: 1rem; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 1rem; }
 .box summary { cursor: pointer; font-weight: 600; }
+ul.archived-people { margin: 0.6rem 0 0; padding-left: 1.2rem; }
 .box form { margin-top: 0.8rem; }
 .link-result { margin-top: 1rem; background: #fffbea; border: 1px solid #e8c66a; border-radius: 6px; padding: 0.6rem 1rem; }
 .link-input { font-family: ui-monospace, monospace; min-width: 24rem; flex: 1; }

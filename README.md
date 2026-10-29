@@ -23,7 +23,10 @@ reports for clients or any other document you build as a PDF.
   invited to several documents, with a role label in each (Director,
   Co-director, Reviewer, Client, Co-author… free text with suggestions). Each
   invitation has its own **secret link**, revocable and rotatable; opening any of
-  a person's links signs them in and shows all their documents.
+  a person's links signs them in and shows all their documents. Each person has
+  a page to edit their name, email and notifications, see every invitation's
+  state, email them a new link, and delete them (if they never commented) or
+  archive them.
 - **Threads** anchored to selected text or to a spot of a page: replies, resolve
   (the opener or the owner) and reopen (anyone who sees the thread), edits (the
   previous texts are kept) and soft deletes of one's own comments. Per document,
@@ -299,10 +302,12 @@ are on the load path: `make test-emacs EMACS_LOAD_PATH="…/evil …/evil-org �
 | POST | `/api/threads/:id/comments` · `/resolve` · `/reopen` | Resolve: the opener or the owner (else 403) |
 | PATCH/DELETE | `/api/comments/:id` | Own comments only; delete is soft |
 | GET | `/api/comments/:id/edits` | Owner; previous texts |
-| GET/POST | `/api/people` · PATCH `/api/people/:id` | Owner: name, email, `notify_versions`, `notify_replies` |
+| GET/POST | `/api/people` | Owner; `?archived=1` lists archived people too; POST `{name, email, notify_versions, notify_replies}` |
+| GET/PATCH/DELETE | `/api/people/:id` | Owner: the person with their invitations (`state`: `active`, `unused`, `revoked`) and comment count / name, email (`""` removes it), `notify_versions`, `notify_replies` / delete (409 if they have comments) |
+| POST | `/api/people/:id/archive` · `/unarchive` | Owner; archiving revokes every invitation and ends their sessions |
 | GET/POST | `/api/documents/:slug/invitations` | Owner; POST `{person_id}` or `{name, email}`, `role`, `send_link`; returns the link once |
 | PATCH | `/api/invitations/:id` | `{role}` |
-| POST | `/api/invitations/:id/rotate` · `/revoke` | Rotate returns a new link (`send_link` optional) |
+| POST | `/api/invitations/:id/rotate` · `/revoke` | Rotate returns a new link; `send_link: true` also emails it (409, and nothing rotated, without an address or SMTP) |
 | GET | `/api/settings` | Owner: notification channels |
 | POST | `/api/sessions/close-all` | Owner; `{reviewers: true}` also ends reviewers' sessions |
 | GET/POST | `/notifications` | A reviewer's own notification settings (HTML form) |

@@ -83,7 +83,7 @@ export function publishForm(pdf: Uint8Array, progress: unknown, note = "", field
 }
 
 /** A real HTTP server on an ephemeral port, in-memory Postgres (PGlite), temp dir storage, fake notifiers. */
-export async function startTestServer(env: Record<string, string> = {}): Promise<TestServer> {
+export async function startTestServer(env: Record<string, string> = {}, opts: { mail?: boolean } = {}): Promise<TestServer> {
   const dir = await mkdtemp(join(tmpdir(), "doc-review-"));
   const mails: Mail[] = [];
   const telegrams: string[] = [];
@@ -101,7 +101,7 @@ export async function startTestServer(env: Record<string, string> = {}): Promise
     ...env,
   });
   const running = await startServer(config, {
-    mailer: { send: async (m) => void mails.push(m) },
+    mailer: opts.mail === false ? null : { send: async (m) => void mails.push(m) },
     telegram: { send: async (t) => void telegrams.push(t) },
     log: (m) => void logs.push(m),
   });

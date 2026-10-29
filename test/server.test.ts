@@ -772,3 +772,167 @@ describe("write limits", () => {
     }
   });
 });
+
+describe("people: editing, invitations' state, delete and archive", () => {
+  let f: TestServer;
+  const point = { version: 1, page: 1, anchor: "point", rects: [{ x: 0.5, y: 0.5, w: 0, h: 0 }], body: "x" };
+  beforeAll(async () => {
+    f = await startTestServer();
+    await f.createDoc("a", { language: "en" });
+    await f.createDoc("b", { language: "es" });
+    expect((await f.publish("a")).status).toBe(201);
+  });
+  afterAll(async () => {
+    await f.stop();
+  });
+
+  it("the owner adds, changes and removes an existing person's email and preferences (validated)", async () => {
+    const inv = await f.invite("a", { name: "Dr. Sin Correo" });
+    const patch = (body: unknown) => f.ownerJson("PATCH", `/api/people/${inv.personId}`, body);
+    let r = await patch({ email: "nuevo@example.test" });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { person: { email: string } }).person.email).toBe("nuevo@example.test");
+    expect((await patch({ email: "not an email" })).status).toBe(400);
+    expect((await patch({ email: "a@b.c‮" })).status).toBe(200); // bidi stripped, then valid
+    r = await patch({ name: "Dr. Con\nCorreo", email: "otro@example.test", notify_replies: "daily", notify_versions: true });
+    expect(((await r.json()) as { person: unknown }).person).toMatchObject({ name: "Dr. Con Correo", email: "otro@example.test", notify_replies: "daily", notify_versions: true });
+    expect((await patch({ notify_replies: "hourly" })).status).toBe(400);
+    expect((await patch({ name: "" })).status).toBe(400);
+    r = await patch({ email: "" });
+    expect(((await r.json()) as { person: { email: string | null } }).person.email).toBeNull();
+    expect((await f.ownerJson("PATCH", "/api/people/9999", { email: "" })).status).toBe(404);
+  });
+
+  it("a person's page shows the form, each invitation's state and its actions; owner only", async () => {
+    const inv = await f.invite("a", { name: "Ing. <b>Pérez</b>", email: "perez@example.test" });
+    await f.invite("b", { person_id: inv.personId, role: "Cliente" });
+    let page = await (await f.owner(`/people/${inv.personId}`)).text();
+    expect(page).toContain("Ing. &lt;b&gt;Pérez&lt;/b&gt;");
+    expect(page).not.toContain("<b>Pérez</b>");
+    expect(page).toContain('id="person-edit-form"');
+    expect(page).toContain('value="perez@example.test"');
+    expect(page).toContain('data-action="email-link"');
+    expect(page).toContain("Not opened yet");
+    expect(page).toContain('id="delete-person"');
+    // Opening the link makes it "Active"; revoking makes it "Revoked".
+    const b = await f.browser(inv.link);
+    expect((await b.get("/people/" + inv.personId)).status).toBe(403);
+    expect((await b.get("/api/people/" + inv.personId)).status).toBe(403);
+    const api = (await (await f.owner(`/api/people/${inv.personId}`)).json()) as { person: { comments: number; invitations: { document: string; state: string }[] } };
+    expect(api.person.comments).toBe(0);
+    expect(api.person.invitations.map((i) => [i.document, i.state]).sort()).toEqual([
+      ["a", "active"],
+      ["b", "unused"],
+    ]);
+    const bInv = (await (await f.owner("/api/documents/b/invitations")).json()) as { invitations: { id: number; person: { id: number } }[] };
+    const revokeId = bInv.invitations.find((i) => i.person.id === inv.personId)!.id;
+    await f.ownerJson("POST", `/api/invitations/${revokeId}/revoke`, {});
+    page = await (await f.owner(`/people/${inv.personId}`)).text();
+    expect(page).toContain("Revoked");
+    expect(page).toContain("Reactivate with a new link");
+    // The document's page links to the person and offers the email action.
+    const manage = await (await f.owner("/d/a/manage")).text();
+    expect(manage).toContain(`href="/people/${inv.personId}"`);
+    expect(manage).toContain('data-action="email-link"');
+    expect((await f.owner("/people/9999")).status).toBe(404);
+    expect((await f.owner("/people/x")).status).toBe(400);
+    // Spanish pages.
+    const es = await (await f.owner(`/people/${inv.personId}`, { headers: { "accept-language": "es" } })).text();
+    expect(es).toContain("Reactivar con enlace nuevo");
+    expect(es).toContain("Eliminar persona");
+  });
+
+  it("«send link by email» needs an address and the SMTP server, and changes nothing otherwise", async () => {
+    const inv = await f.invite("a", { name: "Sin Correo" });
+    const res = await f.ownerJson("POST", `/api/invitations/${inv.invitationId}/rotate`, { send_link: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("no email address");
+    // The old link still works: nothing was rotated.
+    expect((await f.browser(inv.link)).csrf).toHaveLength(43);
+    expect((await f.ownerJson("POST", "/api/documents/b/invitations", { name: "Nadie", send_link: true })).status).toBe(409);
+    expect(((await (await f.owner("/api/people")).json()) as { people: { name: string }[] }).people.map((p) => p.name)).not.toContain("Nadie");
+
+    await f.ownerJson("PATCH", `/api/people/${inv.personId}`, { email: "ya@example.test" });
+    const ok = (await (await f.ownerJson("POST", `/api/invitations/${inv.invitationId}/rotate`, { send_link: true })).json()) as { link: string; email: { sent: boolean } };
+    expect(ok.email.sent).toBe(true);
+    expect(f.mails.at(-1)!.to).toBe("ya@example.test");
+    expect(f.mails.at(-1)!.text).toContain(ok.link);
+
+    const noMail = await startTestServer({}, { mail: false });
+    try {
+      await noMail.createDoc("a");
+      const i = await noMail.invite("a", { name: "X", email: "x@example.test" });
+      const r = await noMail.ownerJson("POST", `/api/invitations/${i.invitationId}/rotate`, { send_link: true });
+      expect(r.status).toBe(409);
+      expect((await noMail.browser(i.link)).csrf).toHaveLength(43);
+      const page = await (await noMail.owner(`/people/${i.personId}`)).text();
+      expect(page).toContain("SMTP is not configured");
+    } finally {
+      await noMail.stop();
+    }
+  });
+
+  it("a person who never commented can be deleted: invitations, links and sessions go too", async () => {
+    const inv = await f.invite("a", { name: "Borrable", email: "borrable@example.test" });
+    await f.invite("b", { person_id: inv.personId });
+    const b = await f.browser(inv.link);
+    expect((await b.get("/api/me")).status).toBe(200);
+    // CSRF and owner-only apply.
+    expect((await b.send("DELETE", `/api/people/${inv.personId}`)).status).toBe(403);
+    const owner = await f.browser();
+    expect((await f.owner(`/api/people/${inv.personId}`)).status).toBe(200);
+    expect((await owner.send("DELETE", `/api/people/${inv.personId}`)).status).toBe(401);
+    expect((await f.ownerJson("DELETE", `/api/people/${inv.personId}`)).status).toBe(200);
+    expect((await f.owner(`/api/people/${inv.personId}`)).status).toBe(404);
+    expect((await b.get("/api/me")).status).toBe(401);
+    expect((await fetch(f.url + new URL(inv.link).pathname, { redirect: "manual" })).status).toBe(404);
+    expect((await f.ownerJson("DELETE", `/api/people/${inv.personId}`)).status).toBe(404);
+    expect(f.logs.join("\n")).toContain(`person #${inv.personId} deleted`);
+  });
+
+  it("someone with comments can't be deleted: archiving revokes everything and hides them; unarchiving doesn't reactivate", async () => {
+    const inv = await f.invite("a", { name: "Comentarista", email: "c@example.test" });
+    const invB = await f.invite("b", { person_id: inv.personId });
+    const b = await f.browser(inv.link);
+    expect((await b.send("POST", "/api/documents/a/threads", point)).status).toBe(201);
+    const del = await f.ownerJson("DELETE", `/api/people/${inv.personId}`);
+    expect(del.status).toBe(409);
+    expect(((await del.json()) as { error: string }).error).toContain("archive");
+    let page = await (await f.owner(`/people/${inv.personId}`)).text();
+    expect(page).not.toContain('id="delete-person"');
+    expect(page).toContain('id="archive-person"');
+
+    expect((await f.ownerJson("POST", `/api/people/${inv.personId}/archive`, {})).status).toBe(200);
+    expect((await b.get("/api/me")).status).toBe(401);
+    expect((await fetch(f.url + new URL(invB.link).pathname, { redirect: "manual" })).status).toBe(404);
+    const listed = async (q = "") =>
+      ((await (await f.owner(`/api/people${q}`)).json()) as { people: { id: number; archived: boolean; invitations: { active: boolean }[] }[] }).people.find((p) => p.id === inv.personId);
+    expect(await listed()).toBeUndefined();
+    const archived = (await listed("?archived=1"))!;
+    expect(archived.archived).toBe(true);
+    expect(archived.invitations.every((i) => !i.active)).toBe(true);
+    // Hidden from the lists, not from their own page; no actions on their invitations.
+    const manage = await (await f.owner("/d/a/manage")).text();
+    expect(manage).not.toContain("Comentarista");
+    expect(manage).toContain("1 archived person is not shown.");
+    const dash = await (await f.owner("/")).text();
+    expect(dash).toContain("1 archived person");
+    page = await (await f.owner(`/people/${inv.personId}`)).text();
+    expect(page).toContain('id="unarchive-person"');
+    expect(page).not.toContain('data-action="rotate"');
+    // An archived person can't be invited or get a new link.
+    expect((await f.ownerJson("POST", `/api/invitations/${inv.invitationId}/rotate`, {})).status).toBe(409);
+    expect((await f.ownerJson("POST", "/api/documents/b/invitations", { person_id: inv.personId })).status).toBe(409);
+    // The comment stays.
+    const threads = (await (await f.owner("/api/documents/a/threads?status=all")).json()) as { threads: { comments: { author: { name: string } }[] }[] };
+    expect(threads.threads.some((t) => t.comments[0]!.author.name === "Comentarista")).toBe(true);
+
+    expect((await f.ownerJson("POST", `/api/people/${inv.personId}/unarchive`, {})).status).toBe(200);
+    const back = (await listed())!;
+    expect(back.archived).toBe(false);
+    expect(back.invitations.every((i) => !i.active)).toBe(true);
+    const again = (await (await f.ownerJson("POST", `/api/invitations/${inv.invitationId}/rotate`, {})).json()) as { invitation: { active: boolean } };
+    expect(again.invitation.active).toBe(true);
+    expect((await f.ownerJson("POST", "/api/people/9999/archive", {})).status).toBe(404);
+  });
+});

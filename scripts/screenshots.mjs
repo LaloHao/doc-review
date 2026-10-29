@@ -147,6 +147,34 @@ await h.evaluate(() => document.querySelector(".page[data-page='3']").scrollInto
 await h.waitForTimeout(300);
 await h.screenshot({ path: out + "es-01-visor-revisor.png" });
 
+// --- the owner edits a person: email and notifications, then puts them back ---
+await o.goto(BASE + "/");
+await o.click("table.people a:text('Dr. Luis Méndez Ortega')");
+await o.waitForSelector("#person-edit-form");
+const save = async (email, replies) => {
+  await o.fill("#person-edit-form input[name=email]", email);
+  await o.selectOption("#person-edit-form select[name=notify_replies]", replies);
+  await Promise.all([o.waitForEvent("load"), o.click("#person-edit-form button[type=submit]")]);
+  if ((await o.inputValue("#person-edit-form input[name=email]")) !== email) throw new Error(`the email was not saved: ${email}`);
+};
+await save("luis.mendez@example.test", "daily");
+await o.goto(BASE + "/");
+await o.waitForSelector("table.people >> text=luis.mendez@example.test");
+await o.click("table.people a:text('Dr. Luis Méndez Ortega')");
+await o.waitForSelector("#person-edit-form");
+await save("codirector@example.test", "never");
+// «Email a new link» asks first, naming the address; dismissed, nothing happens.
+let asked = "";
+o.once("dialog", (d) => {
+  asked = d.message();
+  d.dismiss();
+});
+await o.click("button[data-action=email-link]");
+await o.waitForTimeout(300);
+if (!asked.includes("codirector@example.test")) throw new Error(`no confirmation before emailing a link: ${asked}`);
+if (!(await o.isHidden("#link-result"))) throw new Error("a link was created without confirmation");
+await o.screenshot({ path: out + "11-person.png", fullPage: true });
+
 await browser.close();
 if (errors.length) {
   console.error("page errors:\n" + errors.join("\n"));

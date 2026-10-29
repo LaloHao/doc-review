@@ -165,4 +165,12 @@ create table reviewer_digest_runs (
 );
 `,
   },
+  {
+    name: "002_people_archived",
+    sql: `
+-- An archived person: every invitation revoked, hidden from the owner's lists.
+-- People who never commented can be deleted instead.
+alter table people add column archived_at timestamptz;
+`,
+  },
 ];

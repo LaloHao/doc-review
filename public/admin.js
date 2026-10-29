@@ -1,4 +1,4 @@
-// The owner's pages: the dashboard (documents, people, sessions) and a
+// The owner's pages: the dashboard (documents, people, sessions), a person's page and a
 // document's management page (publish, invitations, settings, archive).
 
 import { api, el, t } from "/static/common.js";
@@ -94,21 +94,6 @@ people?.addEventListener("change", async (e) => {
     fail(err);
   }
 });
-people?.addEventListener("click", async (e) => {
-  const b = e.target.closest("button[data-action=edit-person]");
-  if (!b) return;
-  const name = prompt(t("js.person_name"), b.dataset.name ?? "");
-  if (name === null) return;
-  const email = prompt(t("js.person_email", { name }), b.dataset.email ?? "");
-  if (email === null) return;
-  try {
-    await api("PATCH", `/api/people/${b.dataset.id}`, { name, email: email.trim() });
-    location.reload();
-  } catch (err) {
-    fail(err);
-  }
-});
-
 document.getElementById("sessions-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const reviewers = e.target.elements.reviewers.checked;
@@ -174,16 +159,22 @@ invite?.addEventListener("submit", async (e) => {
   }
 });
 
+// Invitations: on a document's page and on a person's page.
 document.querySelector("table.invitations")?.addEventListener("click", async (e) => {
   const b = e.target.closest("button[data-action]");
   if (!b) return;
-  const { id, name } = b.dataset;
+  const { id, name, email } = b.dataset;
   try {
     if (b.dataset.action === "rotate") {
       if (!confirm(t("js.rotate_confirm", { name }))) return;
-      const send = confirm(t("js.rotate_send"));
+      // Only someone with an address can get it by email, and only if you say so.
+      const send = Boolean(email) && confirm(t("js.rotate_send"));
       const r = await api("POST", `/api/invitations/${id}/rotate`, { send_link: send });
       showLink(r.invitation.person.name, r.link, send ? r.email : null);
+    } else if (b.dataset.action === "email-link") {
+      if (!email || !confirm(t("js.email_link_confirm", { name, email }))) return;
+      const r = await api("POST", `/api/invitations/${id}/rotate`, { send_link: true });
+      showLink(r.invitation.person.name, r.link, r.email);
     } else if (b.dataset.action === "revoke") {
       if (!confirm(t("js.revoke_confirm", { name }))) return;
       await api("POST", `/api/invitations/${id}/revoke`, {});
@@ -198,6 +189,53 @@ document.querySelector("table.invitations")?.addEventListener("click", async (e)
     fail(err);
   }
 });
+
+// --- a person's page ---
+
+const PERSON = document.body.dataset.person ?? "";
+const PERSON_NAME = document.body.dataset.personName ?? "";
+
+document.getElementById("person-edit-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const status = document.getElementById("person-status");
+  try {
+    await api("PATCH", `/api/people/${PERSON}`, {
+      name: f.elements.name.value,
+      email: f.elements.email.value.trim(),
+      notify_replies: f.elements.notify_replies.value,
+      notify_versions: f.elements.notify_versions.checked,
+    });
+    location.reload();
+  } catch (err) {
+    status.textContent = err.message;
+  }
+});
+
+document.getElementById("delete-person")?.addEventListener("click", async () => {
+  if (!confirm(t("js.delete_person_confirm", { name: PERSON_NAME }))) return;
+  try {
+    await api("DELETE", `/api/people/${PERSON}`);
+    location.href = "/";
+  } catch (err) {
+    fail(err);
+  }
+});
+
+for (const [button, action] of [
+  ["archive-person", "archive"],
+  ["unarchive-person", "unarchive"],
+]) {
+  document.getElementById(button)?.addEventListener("click", async () => {
+    if (action === "archive" && !confirm(t("js.archive_person_confirm", { name: PERSON_NAME }))) return;
+    try {
+      await api("POST", `/api/people/${PERSON}/${action}`, {});
+      location.reload();
+    } catch (err) {
+      fail(err);
+    }
+  });
+}
 
 document.getElementById("doc-settings-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
