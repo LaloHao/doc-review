@@ -1,7 +1,7 @@
 ;;; doc-review.el --- Reviewers' comments on your documents, next to the sources -*- lexical-binding: t; -*-
 
 ;; Author: Eduardo V.
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: outlines, tools, wp
 ;; URL: https://github.com/LaloHao/doc-review

@@ -171,6 +171,8 @@ link**, shown **only once**; the server keeps only a hash.
 
 ### People
 
+![A person's page](images/11-person.png)
+
 Each person has a page (click their name on the dashboard or in a document's
 reviewers, or «Edit person»), with:
 
