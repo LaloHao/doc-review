@@ -127,7 +127,7 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
   }
   const repo = new Repo(db, config.ownerName, ownerSessionFingerprint(config.ownerTokenSha256));
   const stale = await repo.purgeStaleOwnerSessions();
-  if (stale) log(`owner token changed: ${stale} owner session(s) closed`);
+  if (stale) log(`owner credentials changed: ${stale} owner session(s) closed`);
   const store = opts.store ?? openStore(config.storage);
   const telegram = opts.telegram !== undefined ? opts.telegram : config.telegram ? telegramClient(config.telegram) : null;
   const mailer = opts.mailer !== undefined ? opts.mailer : config.smtp ? await smtpMailer(config.smtp) : null;
@@ -158,6 +158,7 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
     ticking = true;
     try {
       await repo.purgeExpiredSessions();
+      await repo.purgeEnrollCodes();
       const d = await runDigest(config, repo, notifier, now());
       if (d) log(`daily digests sent: ${d}`);
       const n = await runReviewerDigests(config, repo, notifier, now(), log);

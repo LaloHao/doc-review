@@ -35,6 +35,7 @@ export function page(l: Layout, body: string): string {
         <span class="spacer"></span>
         ${l.who.kind === "owner" && l.doc ? `<a href="/d/${esc(l.doc.slug)}/manage" class="nav-link">${tr.e("nav.manage")}</a>` : ""}
         ${l.who.kind === "reviewer" ? `<a href="/notifications" class="nav-link">${tr.e("nav.notifications")}</a>` : ""}
+        ${l.who.kind === "owner" ? `<a href="/devices" class="nav-link">${tr.e("nav.devices")}</a>` : ""}
         <span class="who">${esc(l.who.name)}${l.who.kind === "owner" ? ` · ${tr.e("nav.owner")}` : ""}</span>
         <form method="post" action="/logout" class="inline">
           <input type="hidden" name="_csrf" value="${esc(l.csrf ?? "")}">

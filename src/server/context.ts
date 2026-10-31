@@ -7,7 +7,7 @@ import type { Config } from "../config.js";
 import { diffVersions, type VersionDiff } from "../diff.js";
 import { negotiate, translator, type Lang, type Tr } from "../i18n/index.js";
 import type { Notifier } from "../notify/notify.js";
-import type { Document, Invitation, Repo, Session, ThreadOut, Version, Viewer } from "../repo.js";
+import { ownerSessionFingerprint, type Document, type Invitation, type OwnerCredential, type Repo, type Session, type ThreadOut, type Version, type Viewer } from "../repo.js";
 import type { BlobStore } from "../storage.js";
 import { safeEqual, sha256Hex } from "./crypto.js";
 import { HttpError } from "./http.js";
@@ -47,7 +47,7 @@ export interface DocAccess {
 
 /** What route modules get: the dependencies plus shared guards and services. */
 export interface App extends Required<AppDeps> {
-  limits: { link: RateLimiter; login: RateLimiter; bearer: RateLimiter; write: RateLimiter };
+  limits: { link: RateLimiter; login: RateLimiter; bearer: RateLimiter; write: RateLimiter; enroll: RateLimiter; enrollGlobal: RateLimiter };
   viewerOf(c: Ctx): Viewer;
   requireOwner(c: Ctx): Viewer;
   whoName(s: Session): string;
@@ -55,7 +55,11 @@ export interface App extends Required<AppDeps> {
   checkCsrf(c: Ctx, formToken?: string): void;
   limited(limiter: RateLimiter, key: string): void;
   writeAllowed(viewer: Viewer): Promise<void>;
-  ownerTokenOk(token: string): boolean;
+  /**
+   * The owner credential of a token: the bootstrap token (OWNER_TOKEN_SHA256)
+   * or an active device's. Null if neither (or owner access is off).
+   */
+  ownerCredential(token: string): Promise<OwnerCredential | null>;
   /** The document of a URL, if the viewer may see it (404 otherwise, for both). */
   documentFor(c: Ctx, slug: string | undefined): Promise<DocAccess>;
   /** Archived documents are read-only. */
@@ -82,7 +86,11 @@ export function createAppContext(deps: AppDeps): App {
     login: new RateLimiter(10, 10 * 60_000),
     bearer: new RateLimiter(30, 10 * 60_000), // failed bearer attempts
     write: new RateLimiter(60, 60_000),
+    // Enrollment (public): per IP, and for everyone together.
+    enroll: new RateLimiter(10, 10 * 60_000),
+    enrollGlobal: new RateLimiter(30, 10 * 60_000),
   };
+  const bootstrapFp = ownerSessionFingerprint(config.ownerTokenSha256);
 
   const viewerOf = (c: Ctx): Viewer => {
     if (!c.session) throw new HttpError(401, "err.auth_required");
@@ -174,7 +182,15 @@ export function createAppContext(deps: AppDeps): App {
         if (n >= config.maxReviewerCommentsPerDay) throw new HttpError(429, "err.daily_cap", { max: config.maxReviewerCommentsPerDay });
       }
     },
-    ownerTokenOk: (token) => config.ownerTokenSha256 !== "" && safeEqual(sha256Hex(token), config.ownerTokenSha256),
+    async ownerCredential(token) {
+      if (config.ownerTokenSha256 === "" || token === "" || token.length > 512) return null;
+      const hash = sha256Hex(token);
+      if (safeEqual(hash, config.ownerTokenSha256)) return { deviceId: null, fp: bootstrapFp };
+      const device = await repo.deviceByTokenHash(hash);
+      if (!device) return null;
+      await repo.touchDevice(device.id);
+      return { deviceId: device.id, fp: ownerSessionFingerprint(hash) };
+    },
     documentFor,
     requireWritable(doc) {
       if (doc.archived_at) throw new HttpError(409, "err.archived");

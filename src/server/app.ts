@@ -4,7 +4,8 @@
 // Authentication, checked on every route except the health checks and the
 // static files (the landing page, the owner login and the invitation links accept
 // requests without a session):
-// - Owner via API: `Authorization: Bearer <owner token>` (Emacs, CLI). No cookies
+// - Owner via API: `Authorization: Bearer <owner token>` (Emacs, CLI): the
+//   bootstrap token (OWNER_TOKEN_SHA256) or a device token. No cookies
 //   are read when this header is present, so no CSRF applies.
 // - Owner on the web: the token is entered once at the login page → session cookie.
 // - Reviewer: an invitation's secret link → session cookie → redirect to a clean URL.
@@ -22,6 +23,7 @@ import { messagePage } from "./pages/layout.js";
 import { ipBucket } from "./ratelimit.js";
 import { Router } from "./router.js";
 import { authRoutes, loggablePath } from "./routes/auth.js";
+import { deviceRoutes } from "./routes/devices.js";
 import { documentRoutes } from "./routes/documents.js";
 import { reviewerRoutes } from "./routes/reviewers.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -82,6 +84,7 @@ export function buildRouter(app: App): Router<Ctx> {
   threadRoutes(r, app);
   reviewerRoutes(r, app);
   settingsRoutes(r, app);
+  deviceRoutes(r, app);
   return r;
 }
 
@@ -90,12 +93,13 @@ async function authenticate(app: App, c: Ctx): Promise<void> {
   const auth = c.req.headers.authorization;
   if (auth !== undefined) {
     const m = /^Bearer\s+(\S+)$/i.exec(auth);
-    if (!m || !app.ownerTokenOk(m[1]!)) {
+    const cred = m ? await app.ownerCredential(m[1]!) : null;
+    if (!cred) {
       app.limited(app.limits.bearer, ipBucket(c.ip));
       throw new HttpError(401, "err.bad_token", {}, { "www-authenticate": 'Bearer realm="doc-review"' });
     }
     c.bearer = true;
-    c.session = { kind: "owner", person: null, csrf: "", idHash: "" };
+    c.session = { kind: "owner", person: null, csrf: "", idHash: "", deviceId: cred.deviceId };
     return;
   }
   const sid = parseCookies(c.req.headers.cookie).get(SESSION_COOKIE);
