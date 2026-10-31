@@ -6,6 +6,7 @@ Markdown), lets you reply and resolve, and shows the open comments as Flymake
 notes on the text. Pure Emacs Lisp (url.el, native JSON); Emacs 29 or newer.
 
 - [Installation](#installation): [vanilla Emacs](#vanilla-emacs), [Doom Emacs](#doom-emacs)
+- [Linking this computer](#linking-this-computer) (a one-time code instead of copying the token)
 - [The project file, .doc-review.json](#the-project-file-doc-reviewjson)
 - [Commands and keys](#commands-and-keys)
 - [The comments buffer](#the-comments-buffer)
@@ -15,12 +16,16 @@ notes on the text. Pure Emacs Lisp (url.el, native JSON); Emacs 29 or newer.
 
 ## Installation
 
-You need the owner token in `~/.config/doc-review/config.json`, mode 0600 (see
+You need an owner token in `~/.config/doc-review/config.json`, mode 0600 (see
 [usage.md](usage.md#first-setup)):
 
 ```json
 {"url": "https://review.example.com", "token": "dr_owner_…"}
 ```
+
+On a computer that doesn't have it yet, don't copy it: link the computer with
+`M-x doc-review-enroll` ([below](#linking-this-computer)), which writes that
+file for you.
 
 ### Vanilla Emacs
 
@@ -49,7 +54,8 @@ package; reload the config):
   :load-path "~/dev/lalohao/doc-review/emacs"
   :commands (doc-review-publish doc-review-comments doc-review-reply
              doc-review-resolve doc-review-reopen doc-review-refresh
-             doc-review-list-documents doc-review-open-in-browser doc-review-mode)
+             doc-review-list-documents doc-review-open-in-browser doc-review-mode
+             doc-review-enroll doc-review-devices)
   :hook ((org-mode latex-mode LaTeX-mode markdown-mode) . doc-review-maybe-enable)
   :init
   ;; Under the localleader instead of C-c d; messages in Spanish.
@@ -112,6 +118,40 @@ Examples:
 {"document": "paper", "pdf": "paper.pdf", "progress": "progress.json", "sources": ["paper.md"]}
 ```
 
+## Linking this computer
+
+To use doc-review from a second computer (a laptop on a trip, a Mac without
+Node) you don't need the main token: give the computer an owner token of its
+own with a one-time code.
+
+1. Where you are already the owner, make a code: the **Devices** page of the
+   web (`/devices` → «Link a new device»), or `doc-review devices code "Mac"`.
+   It looks like `K7Q2X-9XMPA` and is valid for 10 minutes, once.
+2. On the new computer, with `doc-review.el` loaded:
+
+   ```
+   M-x doc-review-enroll
+   doc-review server (https://…): https://review.example.com
+   One-time code: K7Q2X-9XMPA
+   Name of this device (default mac.local): RET
+   ```
+
+   The server is offered from the existing config, if any; the name defaults to
+   `(system-name)`. Case, spaces and hyphens in the code don't matter.
+3. The token arrives once and is written to `doc-review-config-file` with mode
+   600 (its directory 700). If that file already has a server and token,
+   Emacs asks before replacing them (and asks *before* using the code); the
+   other keys are kept, and a server of another address moves under
+   `"servers"`. Only https is accepted (http only for localhost).
+
+`M-x doc-review-devices` (`C-c d D`) lists the main token and your devices
+(when each was linked and last used; «(this one)» marks the current one); `x`
+revokes the device at point after confirmation, `g` refreshes. The main token
+can't be revoked from Emacs: it lives in the server's Secret.
+
+Without Emacs or Node, any shell with curl can redeem a code (see
+[usage.md](usage.md#a-second-computer-without-the-token)).
+
 ## Commands and keys
 
 | Command | Vanilla | Doom | |
@@ -125,6 +165,8 @@ Examples:
 | `doc-review-mode` | `C-c d m` | `SPC m z m` | Toggle the Flymake notes in this buffer |
 | `doc-review-list-documents` | `C-c d l` | `SPC m z l` | Your documents on the server (RET: open in the browser, `g`: refresh) |
 | `doc-review-open-in-browser` | `C-c d b` | `SPC m z b` | The thread at point, or the document (`C-u`: its management page) |
+| `doc-review-devices` | `C-c d D` | — | Your owner devices (`x`: revoke, `g`: refresh) |
+| `doc-review-enroll` | — | — | Link this computer with a one-time code ([above](#linking-this-computer)) |
 
 ### Which PDF gets published
 

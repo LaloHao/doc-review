@@ -43,6 +43,10 @@ reports for clients or any other document you build as a PDF.
   in an org buffer linked to the matching place in your sources, reply, resolve,
   see open comments as Flymake notes. See [docs/emacs.md](docs/emacs.md).
 - **CLI** (`doc-review`) for the same from a shell or a Makefile.
+- **Owner devices**: besides the main token, each of your computers can have its
+  own owner token, listed on a «Devices» page and revocable on its own. A new
+  computer links itself with a one-time code (10 minutes, single use) typed in
+  Emacs, the CLI or curl, so the long-lived token never travels through a chat.
 - **English and Spanish** user interface, server messages and emails.
 
 Documentation: [docs/usage.md](docs/usage.md) (owner and reviewer workflows,
@@ -60,7 +64,7 @@ short guide for Spanish-speaking reviewers,
         └──────────────┬──────────────┴─────────────────────┘
                node:http server (TypeScript, Node 22)
    router · auth/sessions · CSRF · CSP · rate limits · i18n (en, es)
-   routes: auth · documents · versions · threads · reviewers · settings · static
+   routes: auth · documents · versions · threads · reviewers · settings · devices · static
         │                 │                    │                    │
    Postgres (pg)     PDF store           pdf.js (Node)        notifications
    CloudNativePG     PVC dir or S3/R2    worker thread:       Telegram, SMTP
@@ -71,7 +75,7 @@ short guide for Spanish-speaking reviewers,
 |---|---|
 | `src/server/app.ts` | Security headers, authentication, error handling; builds the router |
 | `src/server/router.ts`, `context.ts`, `validate.ts` | The router, the request context and guards, input validation |
-| `src/server/routes/` | Route modules: `auth`, `documents`, `versions`, `threads`, `reviewers`, `settings`, `static` |
+| `src/server/routes/` | Route modules: `auth`, `documents`, `versions`, `threads`, `reviewers`, `settings`, `devices`, `static` |
 | `src/server/pages/` | Server-rendered HTML; everything escaped |
 | `src/i18n/` | Message catalogs (`en.ts`, `es.ts`), plurals, Accept-Language |
 | `src/repo.ts` | All SQL |
@@ -92,7 +96,10 @@ short guide for Spanish-speaking reviewers,
 archived) · `people` (name, optional email, `notify_versions`, `notify_replies`
 `instant|daily|never`) · `invitations` (person × document, role label, hashed
 link secret, rotated/revoked dates) · `sessions` (hashed id, kind
-owner/reviewer, person, CSRF token, sliding expiry, owner-token fingerprint) ·
+owner/reviewer, person, CSRF token, sliding expiry, the fingerprint of the
+owner credential and its device) · `owner_devices` (name, hashed token,
+created/last used/revoked, the device that linked it) · `enroll_codes` (hashed
+one-time code, device name, who made it, expiry, use, wrong attempts) ·
 `session_invitations` (the links a reviewer session was opened with) ·
 `versions` (document, number, note, PDF key + SHA-256, pages, `progress` JSON,
 located section pages) · `version_pages` (extracted text) · `version_diffs`
@@ -151,7 +158,8 @@ The full threat model and the list of measures are in
   revocable, rotatable; the URL is cleaned right away, never logged, and a
   browser with someone else's session asks before switching); the owner with a
   token (bearer for the CLI and Emacs, a session on the web; rotating the token
-  ends the web sessions).
+  ends the web sessions). Each computer can have its own owner token, linked
+  with a one-time code and revocable alone (revoking ends its sessions).
 - Cookie sessions are `__Host-`, `HttpOnly`, `Secure`, `SameSite=Lax`; every
   cookie-authenticated mutation needs the same origin (with a `Sec-Fetch-Site`
   fallback for `Origin: null`) and the session's CSRF token.
@@ -166,8 +174,9 @@ The full threat model and the list of measures are in
 - Uploads: size limits, magic bytes, every page parsed by pdf.js in a worker
   thread (512 MB heap, 90 s). JSON bodies, comments, quotes, rects and integers
   are validated (400, never a database error).
-- Rate limits per IP (IPv6 per /64) on links, login and failed tokens; writes
-  per person; a daily cap of comments per reviewer.
+- Rate limits per IP (IPv6 per /64) on links, login, failed tokens and device
+  enrollment (which also has a global limit); writes per person; a daily cap of
+  comments per reviewer. An enrollment code survives at most 5 wrong guesses.
 - The CLI and Emacs only send the token over https (http only to localhost), and
   only to the server it was configured for.
 - The container runs as non-root with a read-only root file system and no
@@ -203,7 +212,9 @@ Open `http://localhost:8080/login` for the owner dashboard, and the printed
 `scripts/smoke.sh` (or `make smoke`) runs the whole flow end to end against a
 throwaway server: two documents, a person invited to both with different roles
 and a second reviewer on one, comments, resolve rules, visibility, emails to a
-fake SMTP server, the CLI and Emacs (batch) from a `.doc-review.json` project.
+fake SMTP server, the CLI and Emacs (batch) from a `.doc-review.json` project,
+and two more computers linked as owner devices with one-time codes (CLI and
+Emacs), one of them then revoked.
 With `CHROME=/path/to/chrome` it also drives the UI with playwright-core and
 refreshes `docs/images/`.
 
@@ -215,7 +226,7 @@ refreshes `docs/images/`.
 |---|---|---|
 | `PUBLIC_URL` | `http://localhost:8080` | Exact public origin (links, CSRF origin check) |
 | `PORT`, `HOST` | `8080`, `0.0.0.0` | |
-| `OWNER_TOKEN_SHA256` | — | SHA-256 of the owner token (`doc-review gen-token`); owner access is off without it |
+| `OWNER_TOKEN_SHA256` | — | SHA-256 of the main («bootstrap») owner token (`doc-review gen-token`); owner access — device tokens included — is off without it. Device tokens live in the database ([docs/usage.md](docs/usage.md#a-second-computer-without-the-token)) |
 | `OWNER_NAME` | `Owner` | Your name, as reviewers see it |
 | `DATABASE_URL` | `pglite:$DATA_DIR/pglite` | `postgres://…` or `pglite:<dir>` / `pglite:memory` |
 | `DATABASE_ADMIN_URL` | `DATABASE_URL` | Role that runs migrations |
@@ -238,7 +249,7 @@ refreshes `docs/images/`.
 
 | Setting | |
 |---|---|
-| `~/.config/doc-review/config.json` | `{"url": "https://…", "token": "dr_owner_…"}`, mode 0600; tokens of other servers in `"servers": {"https://…": "dr_owner_…"}` |
+| `~/.config/doc-review/config.json` | `{"url": "https://…", "token": "dr_owner_…"}`, mode 0600; tokens of other servers in `"servers": {"https://…": "dr_owner_…"}`. `doc-review enroll CODE --url …` and `M-x doc-review-enroll` write it for a newly linked device |
 | `DOC_REVIEW_CONFIG` | Another path for that file (`XDG_CONFIG_HOME` is honored) |
 | `.doc-review.json` | A project: `{"document", "pdf", "progress", "sources", "url"}`; `pdf` may be a list of files and globs (the newest match is published) (see [docs/emacs.md](docs/emacs.md#the-project-file-doc-reviewjson)) |
 | `DOC_REVIEW_DOCUMENT` | Default document of the CLI (after `-d`, before `.doc-review.json`) |
@@ -287,7 +298,7 @@ No test uses the network: notifications go to fake Telegram/SMTP transports, S3
 is tested with a fake `fetch`. The Emacs evil test runs when evil and evil-org
 are on the load path: `make test-emacs EMACS_LOAD_PATH="…/evil …/evil-org …/goto-chg"`.
 
-## API (owner token or session)
+## API (owner token or session; one public endpoint)
 
 | Method | Path | |
 |---|---|---|
@@ -310,6 +321,11 @@ are on the load path: `make test-emacs EMACS_LOAD_PATH="…/evil …/evil-org �
 | POST | `/api/invitations/:id/rotate` · `/revoke` | Rotate returns a new link; `send_link: true` also emails it (409, and nothing rotated, without an address or SMTP) |
 | GET | `/api/settings` | Owner: notification channels |
 | POST | `/api/sessions/close-all` | Owner; `{reviewers: true}` also ends reviewers' sessions |
+| GET | `/api/devices` | Owner: the main token (`bootstrap: true`, `id: null`) and every device (`active`, `current`, `created_at`, `last_used_at`, `revoked_at`, `created_from`) |
+| POST | `/api/devices/enroll-codes` | Owner; `{name}` → `{code, expires_at, expires_in, url, commands}`: a one-time code, valid 10 minutes, at most 5 unused (409) |
+| POST | `/api/devices/enroll` | **Public**; `{code, name?}` → `{token, name, url, device}` once (201); 400 for an invalid, used or expired code; 403 with a cross-site `Origin`/`Sec-Fetch-Site`; 429 past 10 attempts per IP or 30 in all per 10 minutes |
+| POST | `/api/devices/:id/revoke` | Owner; ends the device's sessions; `bootstrap` → 409 (rotate it in the Secret) |
+| GET | `/devices` | Owner: the devices page |
 | GET/POST | `/notifications` | A reviewer's own notification settings (HTML form) |
 
 Error messages follow `Accept-Language` (English or Spanish).
