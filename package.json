@@ -1,6 +1,6 @@
 {
   "name": "doc-review",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Self-hosted document review: reviewers comment on PDF versions in threads anchored to the text; the owner gets the comments on the web, Telegram, email and in Emacs.",
   "license": "MIT",
