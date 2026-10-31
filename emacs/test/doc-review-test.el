@@ -559,6 +559,117 @@ code that is not in the PDF
             (should (equal (doc-review-open-in-browser t) "https://r.example/d/thesis/manage")))
         (delete-file cfg)))))
 
+;;; Devices
+
+(defmacro doc-review-test--mock-retrieve (response &rest body)
+  "Run BODY with `doc-review--retrieve' returning RESPONSE; bind `calls'."
+  (declare (indent 1))
+  `(let ((calls nil))
+     (cl-letf (((symbol-function 'doc-review--retrieve)
+                (lambda (url method headers &optional data)
+                  (push (list url method headers data) calls)
+                  ,response)))
+       ,@body)))
+
+(defconst doc-review-test--enrolled
+  '(201 . "{\"token\": \"dr_owner_NEWTOKEN\", \"name\": \"mac\\u001b[2J\", \"url\": \"https://r.example\"}"))
+
+(ert-deftest doc-review-test-enroll-writes-private-config ()
+  (let* ((dir (make-temp-file "dr-enroll" t))
+         (doc-review-config-file (expand-file-name "new/doc-review/config.json" dir)))
+    (unwind-protect
+        (doc-review-test--mock-retrieve doc-review-test--enrolled
+          (should (equal (doc-review-enroll "https://r.example/" " k7q2x-9xmpa " "mac") "mac[2J"))
+          (pcase-let ((`(,url ,method ,headers ,data) (car calls)))
+            (should (equal url "https://r.example/api/devices/enroll"))
+            (should (equal method "POST"))
+            ;; No token goes with the request: there is none yet.
+            (should-not (assoc "Authorization" headers))
+            (should (equal (cdr (assoc "Content-Type" headers)) "application/json"))
+            (should (equal (doc-review--parse-json (decode-coding-string data 'utf-8))
+                           '((code . "k7q2x-9xmpa") (name . "mac")))))
+          (should (= (file-modes doc-review-config-file) #o600))
+          (should (= (file-modes (file-name-directory doc-review-config-file)) #o700))
+          (should (equal (doc-review--server) '("https://r.example" . "dr_owner_NEWTOKEN"))))
+      (delete-directory dir t))))
+
+(ert-deftest doc-review-test-enroll-asks-before-replacing ()
+  (let ((doc-review-config-file
+         (doc-review-test--config "{\"url\": \"https://old.example\", \"token\": \"dr_owner_old\", \"language\": \"es\"}" #o644)))
+    (unwind-protect
+        (progn
+          ;; Declined: nothing is sent, nothing changes.
+          (doc-review-test--mock-retrieve doc-review-test--enrolled
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+              (should-error (doc-review-enroll "https://r.example" "K7Q2X-9XMPA" "mac") :type 'user-error))
+            (should-not calls))
+          (should (equal (alist-get 'token (doc-review--config-json)) "dr_owner_old"))
+          ;; Confirmed: replaced; the old server is kept under "servers", other keys too.
+          (doc-review-test--mock-retrieve doc-review-test--enrolled
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+              (doc-review-enroll "https://r.example" "K7Q2X-9XMPA" "mac")))
+          (let ((json (doc-review--config-json)))
+            (should (equal (alist-get 'url json) "https://r.example"))
+            (should (equal (alist-get 'token json) "dr_owner_NEWTOKEN"))
+            (should (equal (alist-get 'language json) "es"))
+            (should (equal (alist-get 'servers json) '((https://old.example . "dr_owner_old")))))
+          (should (= (file-modes doc-review-config-file) #o600))
+          (should (equal (doc-review--server (doc-review--make-project :url "https://old.example"))
+                         '("https://old.example" . "dr_owner_old"))))
+      (delete-file doc-review-config-file))))
+
+(ert-deftest doc-review-test-enroll-errors ()
+  (let* ((dir (make-temp-file "dr-enroll" t))
+         (doc-review-config-file (expand-file-name "config.json" dir)))
+    (unwind-protect
+        (progn
+          (doc-review-test--mock-retrieve doc-review-test--enrolled
+            (should-error (doc-review-enroll "http://r.example" "K7Q2X-9XMPA" "mac") :type 'user-error)
+            (should-error (doc-review-enroll "https://r.example" "  " "mac") :type 'user-error)
+            (should-not calls))
+          (doc-review-test--mock-retrieve '(400 . "{\"error\": \"Invalid, used or expired code.\"}")
+            (let ((err (should-error (doc-review-enroll "https://r.example" "K7Q2X-9XMPA" "mac") :type 'user-error)))
+              (should (string-match-p "Invalid, used or expired code" (cadr err)))))
+          (doc-review-test--mock-retrieve '(201 . "{\"name\": \"mac\"}")
+            (should-error (doc-review-enroll "https://r.example" "K7Q2X-9XMPA" "mac")))
+          (should-not (file-exists-p doc-review-config-file)))
+      (delete-directory dir t))))
+
+(ert-deftest doc-review-test-enroll-prompts ()
+  (let ((doc-review-config-file (doc-review-test--config "{\"url\": \"https://r.example\", \"token\": \"t\"}"))
+        prompts)
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (prompt &optional _initial _history default &rest _)
+                     (push (cons prompt default) prompts)
+                     (or default "K7Q2X-9XMPA"))))
+          (should (equal (doc-review--read-enroll-args) (list "https://r.example" "K7Q2X-9XMPA" (system-name))))
+          (should (string-match-p "https://r.example" (car (nth 2 prompts)))))
+      (delete-file doc-review-config-file))))
+
+(ert-deftest doc-review-test-devices-buffer-and-revoke ()
+  (let ((devices '((devices . (((id . nil) (name . "main (OWNER_TOKEN_SHA256)") (bootstrap . t) (active . t) (current . t)
+                                (created_at . nil) (last_used_at . nil))
+                               ((id . 3) (name . "MacBook\e[2J") (bootstrap . :false) (active . t) (current . :false)
+                                (created_at . "2026-10-30T18:00:00Z") (last_used_at . nil))
+                               ((id . 4) (name . "Old") (bootstrap . :false) (active . :false) (current . :false)
+                                (created_at . "2026-10-01T18:00:00Z") (last_used_at . "2026-10-02T18:00:00Z")))))))
+    (doc-review-test--mock devices
+      (doc-review-devices)
+      (with-current-buffer "*doc-review devices*"
+        (let ((text (buffer-string)))
+          (should (string-match-p "main (OWNER_TOKEN_SHA256) (this one)" text))
+          (should (string-match-p "MacBook\\[2J .*never +active" text))
+          (should (string-match-p "Old .*revoked" text))
+          (should-not (string-match-p "\e" text)))
+        (goto-char (point-min))
+        (should-error (doc-review-devices-revoke) :type 'user-error)
+        (forward-line 1)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (doc-review-devices-revoke))
+        (should (member '("POST" "/api/devices/3/revoke" nil nil) calls))
+        (kill-buffer)))))
+
 ;;; Keys
 
 (ert-deftest doc-review-test-command-map-and-prefix ()
@@ -566,6 +677,7 @@ code that is not in the PDF
   (should (eq (lookup-key doc-review-command-map (kbd "c")) #'doc-review-comments))
   (should (eq (lookup-key doc-review-command-map (kbd "l")) #'doc-review-list-documents))
   (should (eq (lookup-key doc-review-command-map (kbd "b")) #'doc-review-open-in-browser))
+  (should (eq (lookup-key doc-review-command-map (kbd "D")) #'doc-review-devices))
   (let ((old doc-review-keymap-prefix))
     (unwind-protect
         (progn

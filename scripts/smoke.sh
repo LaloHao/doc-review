@@ -5,7 +5,8 @@
 # Emacs (batch) publish from a project with .doc-review.json; reviewers comment
 # through the browser API (cookie + Origin + CSRF token); resolve rules and
 # visibility; email notifications go to a fake SMTP server and are checked;
-# a second computer links itself with a one-time code (CLI), then is revoked.
+# a second computer links itself with a one-time code (CLI), then is revoked;
+# a third one links itself from Emacs.
 # With CHROME=/path/to/chrome it also drives the real UI with playwright-core
 # and refreshes docs/images.
 #
@@ -205,9 +206,21 @@ $CLI devices revoke "$DEVICE_ID"
 if DOC_REVIEW_CONFIG=$SECOND $CLI documents list 2>/dev/null; then fail "a revoked device still works"; fi
 ok "the revoked device's token is refused"
 
+step "devices: Emacs (batch) links a third computer with a code"
+CODE2=$($CLI devices code "Emacs" | sed -n 's/^code for .*: \([0-9A-Z]\{5\}-[0-9A-Z]\{5\}\)$/\1/p')
+THIRD=$WORK/third/doc-review/config.json
+emacs -Q --batch -L "$REPO/emacs" -l doc-review \
+  --eval "(setq doc-review-config-file \"$THIRD\")" \
+  --eval "(progn (doc-review-enroll \"$BASE\" \"$(echo "$CODE2" | tr 'A-Z' 'a-z')\" \"emacs-batch\")
+                 (unless (doc-review-list-documents) (error \"no documents with the new token\")))"
+[ "$(stat -c %a "$THIRD")" = 600 ] || fail "Emacs wrote the config without mode 600"
+EMACS_TOKEN=$(jq -r .token "$THIRD")
+$CLI devices list | grep -q "emacs-batch" || fail "the Emacs device is not listed"
+ok "Emacs linked a device (mode 600) and listed the documents with its token"
+
 step "server log (no secrets expected)"
 cat "$WORK/server.log"
-for secret in "$TOKEN" "${ANA_THESIS##*/}" "${ANA_REPORT##*/}" "${LUIS##*/}" "$CODE" "${CODE/-/}" "$DEVICE_TOKEN"; do
+for secret in "$TOKEN" "${ANA_THESIS##*/}" "${ANA_REPORT##*/}" "${LUIS##*/}" "$CODE" "${CODE/-/}" "$DEVICE_TOKEN" "$CODE2" "${CODE2/-/}" "$EMACS_TOKEN"; do
   if grep -q -e "$secret" "$WORK/server.log"; then fail "secret in the log"; fi
 done
 ok "no token or link in the log"
