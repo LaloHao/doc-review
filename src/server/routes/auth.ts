@@ -74,15 +74,16 @@ export function authRoutes(r: Router<Ctx>, app: App): void {
     const form = await readForm(c.req);
     const pre = parseCookies(c.req.headers.cookie).get(PRE_COOKIE) ?? "";
     if (!pre || !safeEqual(form.get("_csrf") ?? "", pre)) throw new HttpError(403, "err.form_expired");
-    if (!app.ownerTokenOk(form.get("token") ?? "")) {
+    const cred = await app.ownerCredential((form.get("token") ?? "").trim());
+    if (!cred) {
       log(`owner login failed from ${c.ip}`);
       const fresh = newSecret(24);
       const tr = translator(c.lang);
       return html(c.res, 401, loginPage(tr, fresh, tr("login.wrong")), { "set-cookie": cookie(PRE_COOKIE, fresh, 3600) });
     }
     if (c.session) await repo.deleteSession(c.session.idHash);
-    const s = await repo.createSession("owner", null, OWNER_TTL);
-    log("owner session created");
+    const s = await repo.createSession("owner", null, OWNER_TTL, undefined, cred);
+    log(`owner session created (${cred.deviceId === null ? "bootstrap token" : `device #${cred.deviceId}`})`);
     redirect(c.res, "/", { "set-cookie": [cookie(SESSION_COOKIE, s.id, OWNER_TTL / 1000), cookie(PRE_COOKIE, "", 0)] });
   });
 

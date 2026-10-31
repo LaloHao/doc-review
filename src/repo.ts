@@ -4,7 +4,7 @@ import type { Db, Queryable } from "./db/db.js";
 import { sectionOfPage, type SectionPages, type VersionDiff } from "./diff.js";
 import type { Lang } from "./i18n/index.js";
 import type { Progress } from "./progress.js";
-import { newSecret, sha256Hex } from "./server/crypto.js";
+import { newOwnerToken, newSecret, safeEqual, sha256Hex } from "./server/crypto.js";
 import { renderComment } from "./text.js";
 
 export type AuthorKind = "owner" | "reviewer";
@@ -67,7 +67,35 @@ export interface Session {
   idHash: string;
   /** The expiry was just extended: the cookie's Max-Age should be too. */
   refreshed?: boolean;
+  /** Owner sessions: the device they were opened with (null: the bootstrap token). */
+  deviceId?: number | null;
 }
+
+/** An owner device: a token of its own, a full owner credential. */
+export interface OwnerDevice {
+  id: number;
+  name: string;
+  created_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
+  /** The device whose enrollment code created it: its id, or "bootstrap". */
+  created_from: string;
+}
+
+/**
+ * The owner credential a request or a session comes from: the bootstrap token
+ * (OWNER_TOKEN_SHA256, deviceId null) or a device, and the fingerprint its
+ * sessions carry.
+ */
+export interface OwnerCredential {
+  deviceId: number | null;
+  fp: string;
+}
+
+const DEVICE_COLS = "id, name, created_at, last_used_at, revoked_at, created_from";
+
+/** `last_used_at` of a device is written at most this often. */
+export const DEVICE_TOUCH_MS = 60_000;
 
 export interface Version {
   id: number;
@@ -185,10 +213,15 @@ export function ownerSessionFingerprint(ownerTokenSha256: string): string {
 export const SECRET_RE = /^[A-Za-z0-9_-]{43}$/;
 
 export class Repo {
+  /** The time, for device and enrollment-code timestamps (tests move it). */
+  clock: () => number = Date.now;
+  /** When each device's last_used_at was last written (the throttle). */
+  private readonly touched = new Map<number, number>();
+
   constructor(
     readonly db: Db,
     private readonly ownerName: string,
-    /** `ownerSessionFingerprint` of the current owner token. */
+    /** `ownerSessionFingerprint` of the current owner token ("" = owner access off). */
     private readonly ownerFp = "",
   ) {}
 
@@ -471,14 +504,26 @@ export class Repo {
 
   // --- sessions ---
 
-  async createSession(kind: AuthorKind, personId: number | null, ttlMs: number, invitationId?: number): Promise<{ id: string; csrf: string; idHash: string }> {
+  /**
+   * A new session. Owner sessions remember the credential they were opened
+   * with (`owner`; the bootstrap token by default): rotating that token or
+   * revoking that device ends them.
+   */
+  async createSession(
+    kind: AuthorKind,
+    personId: number | null,
+    ttlMs: number,
+    invitationId?: number,
+    owner: OwnerCredential = { deviceId: null, fp: this.ownerFp },
+  ): Promise<{ id: string; csrf: string; idHash: string }> {
     const id = newSecret(32);
     const csrf = newSecret(32);
     const idHash = sha256Hex(id);
+    const isOwner = kind === "owner";
     await this.db.tx(async (q) => {
       await q.query(
-        `insert into sessions (id_hash, kind, person_id, csrf_token, expires_at, owner_fp) values ($1, $2, $3, $4, $5, $6)`,
-        [idHash, kind, personId, csrf, new Date(Date.now() + ttlMs), kind === "owner" ? this.ownerFp : null],
+        `insert into sessions (id_hash, kind, person_id, csrf_token, expires_at, owner_fp, owner_device_id) values ($1, $2, $3, $4, $5, $6, $7)`,
+        [idHash, kind, personId, csrf, new Date(Date.now() + ttlMs), isOwner ? owner.fp : null, isOwner ? owner.deviceId : null],
       );
       if (invitationId !== undefined) await grant(q, idHash, invitationId);
     });
@@ -500,12 +545,23 @@ export class Repo {
       expires_at: Date;
       last_seen_at: Date;
       owner_fp: string | null;
-    }>("select kind, person_id, csrf_token, expires_at, last_seen_at, owner_fp from sessions where id_hash = $1", [idHash]);
+      owner_device_id: number | null;
+    }>("select kind, person_id, csrf_token, expires_at, last_seen_at, owner_fp, owner_device_id from sessions where id_hash = $1", [idHash]);
     if (!s || new Date(s.expires_at).getTime() <= Date.now()) return null;
-    if (s.kind === "owner" && (!this.ownerFp || s.owner_fp !== this.ownerFp)) {
-      // Opened with an owner token that is no longer the current one.
-      await this.deleteSession(idHash);
-      return null;
+    if (s.kind === "owner") {
+      // The credential it was opened with must still be valid: the current
+      // bootstrap token, or a device that isn't revoked (and owner access on).
+      let ok = false;
+      if (this.ownerFp && s.owner_device_id === null) ok = s.owner_fp === this.ownerFp;
+      else if (this.ownerFp) {
+        const [d] = await this.db.query<{ token_hash: string }>("select token_hash from owner_devices where id = $1 and revoked_at is null", [s.owner_device_id]);
+        ok = d !== undefined && s.owner_fp === ownerSessionFingerprint(d.token_hash);
+      }
+      if (!ok) {
+        await this.deleteSession(idHash);
+        return null;
+      }
+      if (s.owner_device_id !== null) await this.touchDevice(s.owner_device_id);
     }
     let person: Person | null = null;
     if (s.kind === "reviewer") {
@@ -529,7 +585,7 @@ export class Repo {
       ]);
       if (person) await this.db.query("update people set last_seen_at = now() where id = $1", [person.id]);
     }
-    return { kind: s.kind, person, csrf: s.csrf_token, idHash, refreshed };
+    return { kind: s.kind, person, csrf: s.csrf_token, idHash, refreshed, ...(s.kind === "owner" ? { deviceId: s.owner_device_id } : {}) };
   }
 
   async deleteSession(idHash: string): Promise<void> {
@@ -540,13 +596,136 @@ export class Repo {
     await this.db.query("delete from sessions where expires_at < now()");
   }
 
-  /** Deletes owner sessions opened with another owner token; returns how many. */
+  /**
+   * Deletes owner sessions whose credential is gone: opened with another
+   * bootstrap token, or with a revoked device (all of them when owner access is
+   * off). Returns how many.
+   */
   async purgeStaleOwnerSessions(): Promise<number> {
     const rows = await this.db.query(
-      "delete from sessions where kind = 'owner' and owner_fp is distinct from $1 returning id_hash",
+      `delete from sessions s where s.kind = 'owner' and (
+         $1 = ''
+         or (s.owner_device_id is null and s.owner_fp is distinct from $1)
+         or exists (select 1 from owner_devices d where d.id = s.owner_device_id and d.revoked_at is not null)
+       ) returning id_hash`,
       [this.ownerFp],
     );
     return rows.length;
+  }
+
+  // --- owner devices and enrollment codes ---
+
+  listDevices(): Promise<OwnerDevice[]> {
+    return this.db.query<OwnerDevice>(`select ${DEVICE_COLS} from owner_devices order by revoked_at nulls first, created_at, id`);
+  }
+
+  async getDevice(id: number): Promise<OwnerDevice | null> {
+    const [d] = await this.db.query<OwnerDevice>(`select ${DEVICE_COLS} from owner_devices where id = $1`, [id]);
+    return d ?? null;
+  }
+
+  /**
+   * The active device whose token hashes to `tokenHash`: looked up by the hash
+   * (an index lookup), then compared in constant time.
+   */
+  async deviceByTokenHash(tokenHash: string): Promise<OwnerDevice | null> {
+    if (!/^[0-9a-f]{64}$/.test(tokenHash)) return null;
+    const [d] = await this.db.query<OwnerDevice & { token_hash: string }>(
+      `select ${DEVICE_COLS}, token_hash from owner_devices where token_hash = $1 and revoked_at is null`,
+      [tokenHash],
+    );
+    if (!d || !safeEqual(d.token_hash, tokenHash)) return null;
+    const { token_hash: _, ...device } = d;
+    return device;
+  }
+
+  /** Session fingerprint of a device's credential. */
+  async deviceFingerprint(id: number): Promise<string | null> {
+    const [d] = await this.db.query<{ token_hash: string }>("select token_hash from owner_devices where id = $1 and revoked_at is null", [id]);
+    return d ? ownerSessionFingerprint(d.token_hash) : null;
+  }
+
+  /** Records that a device was used: at most once a minute per device. */
+  async touchDevice(id: number): Promise<void> {
+    const now = this.clock();
+    const last = this.touched.get(id);
+    if (last !== undefined && now - last < DEVICE_TOUCH_MS && now >= last) return;
+    this.touched.set(id, now);
+    if (this.touched.size > 1000) this.touched.clear();
+    await this.db.query("update owner_devices set last_used_at = $2 where id = $1 and (last_used_at is null or last_used_at < $3)", [
+      id,
+      new Date(now),
+      new Date(now - DEVICE_TOUCH_MS),
+    ]);
+  }
+
+  /** Revokes a device and ends the sessions opened with it. Null if there's no such device. */
+  async revokeDevice(id: number): Promise<{ device: OwnerDevice; sessions: number } | null> {
+    return this.db.tx(async (q) => {
+      await q.query("update owner_devices set revoked_at = $2 where id = $1 and revoked_at is null", [id, new Date(this.clock())]);
+      const [device] = await q.query<OwnerDevice>(`select ${DEVICE_COLS} from owner_devices where id = $1`, [id]);
+      if (!device) return null;
+      const sessions = await q.query("delete from sessions where owner_device_id = $1 returning id_hash", [id]);
+      return { device, sessions: sessions.length };
+    });
+  }
+
+  /** Enrollment codes that can still be used. */
+  async activeEnrollCodes(maxAttempts: number): Promise<number> {
+    const [r] = await this.db.query<{ n: number }>(
+      "select count(*)::int as n from enroll_codes where used_at is null and expires_at > $1 and attempts < $2",
+      [new Date(this.clock()), maxAttempts],
+    );
+    return r?.n ?? 0;
+  }
+
+  /** Stores a new enrollment code (its hash) for a device to be called `deviceName`. */
+  async createEnrollCode(codeHash: string, deviceName: string, createdBy: string, ttlMs: number): Promise<Date> {
+    const now = this.clock();
+    const expires = new Date(now + ttlMs);
+    await this.db.query(
+      "insert into enroll_codes (code_hash, device_name, created_by_device, created_at, expires_at) values ($1, $2, $3, $4, $5)",
+      [codeHash, deviceName, createdBy, new Date(now), expires],
+    );
+    return expires;
+  }
+
+  /**
+   * Uses an enrollment code (by its hash): if it is unused, unexpired and has
+   * attempts left, it is spent and a device is created (named `name`, or as the
+   * code says); its token is returned, the only time it exists in clear. A
+   * wrong code counts as a failed attempt against every active code (which
+   * one it was meant for can't be known), so each code survives at most
+   * `maxAttempts` guesses in total.
+   */
+  async redeemEnrollCode(
+    codeHash: string,
+    name: string | null,
+    maxAttempts: number,
+  ): Promise<{ device: OwnerDevice; token: string; createdBy: string } | null> {
+    const now = new Date(this.clock());
+    return this.db.tx(async (q) => {
+      const [c] = await q.query<{ device_name: string; created_by_device: string }>(
+        `update enroll_codes set used_at = $2 where code_hash = $1 and used_at is null and expires_at > $2 and attempts < $3
+         returning device_name, created_by_device`,
+        [codeHash, now, maxAttempts],
+      );
+      if (!c) {
+        await q.query("update enroll_codes set attempts = attempts + 1 where used_at is null and expires_at > $1 and attempts < $2", [now, maxAttempts]);
+        return null;
+      }
+      const token = newOwnerToken();
+      const [device] = await q.query<OwnerDevice>(
+        `insert into owner_devices (name, token_hash, created_at, created_from) values ($1, $2, $3, $4) returning ${DEVICE_COLS}`,
+        [name || c.device_name, sha256Hex(token), now, c.created_by_device],
+      );
+      return { device: device!, token, createdBy: c.created_by_device };
+    });
+  }
+
+  /** Forgets enrollment codes that expired more than a day ago. */
+  async purgeEnrollCodes(): Promise<void> {
+    await this.db.query("delete from enroll_codes where expires_at < $1", [new Date(this.clock() - 24 * 3600_000)]);
   }
 
   /** "Close all sessions": every owner web session and, optionally, every reviewer session. */

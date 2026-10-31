@@ -2,6 +2,7 @@
 
 - [For you (the owner)](#for-you-the-owner)
   - [First setup](#first-setup)
+  - [Devices: a second computer without the token](#a-second-computer-without-the-token)
   - [Documents](#documents)
   - [Publishing a version](#publishing-a-version)
   - [Inviting reviewers](#inviting-reviewers)
@@ -44,7 +45,8 @@
    token: the browser keeps a 30-day session (renewed while you use it).
 
    - **Changing the token** (`gen-token` again and the new SHA-256 in the
-     Secret) ends every browser session opened with the old one.
+     Secret) ends every browser session opened with the old one; device tokens
+     (below) keep working.
    - **Close all sessions** (dashboard → Sessions, or `doc-review sessions
      close-all`) ends your browser sessions everywhere (the CLI and Emacs keep
      working); with «Also every reviewer's session» (`--reviewers`) reviewers have
@@ -52,6 +54,66 @@
 
 The dashboard and the pages outside a document follow your browser's language
 (English or Spanish).
+
+### A second computer without the token
+
+The token of step 1 is the **main** («bootstrap») token: it lives in the
+server's Secret as `OWNER_TOKEN_SHA256`. Instead of copying it to every
+computer (through a chat, an email or a USB stick), give each computer **its own
+owner token**: a *device*. A device token can do everything the main one can,
+but it is listed on its own and can be revoked alone.
+
+A new computer gets its token with a **one-time code** made on a computer (or
+browser) where you are already signed in as the owner:
+
+1. **On a device you already have** — the web page **Devices** (top bar, or
+   `/devices`) → «Link a new device» → a name for the new computer → «Make a
+   code»; or from a shell: `doc-review devices code "MacBook"`. You get a code
+   such as `K7Q2X-9XMPA`, valid for **10 minutes** and **once**, and the commands
+   to use it. It is short enough to read over the phone or type by hand; case,
+   spaces and hyphens don't matter.
+
+2. **On the new computer**, one of:
+
+   - **Emacs** (no Node needed): load `doc-review.el` and run
+     `M-x doc-review-enroll`. It asks for the server
+     (`https://review.example.com`), the code and a name for this computer
+     (default: its host name), then writes `~/.config/doc-review/config.json`
+     with mode 600. See [emacs.md](emacs.md#linking-this-computer).
+   - **The CLI**: `doc-review enroll K7Q2X-9XMPA --url https://review.example.com
+     [--name "MacBook"]`. Same file, same mode.
+   - **Neither** (any shell with curl, e.g. a Mac out of the box):
+
+     ```sh
+     curl -sS -X POST https://review.example.com/api/devices/enroll \
+       -H 'content-type: application/json' -d '{"code":"K7Q2X-9XMPA"}'
+     ```
+
+     prints `{"token": "dr_owner_…", …}` once; put it in
+     `~/.config/doc-review/config.json` (`{"url": …, "token": …}`, `chmod 600`),
+     or paste it at `/login` to use only the browser.
+
+   The browser of the new computer then signs in at `/login` with that token.
+
+3. The device appears on the Devices page (and in `doc-review devices list`)
+   with the date it was linked and when it was last used.
+
+Good to know:
+
+- If the config file already has a server and token, `enroll` refuses to
+  replace them unless `--force` (Emacs asks first); the other keys are kept,
+  and a server of another address moves under `"servers"`. This is checked
+  before the code is used.
+- A code dies on first use, after 10 minutes, or after **5 wrong attempts** —
+  any wrong code typed by anyone counts against every code still active, so if
+  a code stops working early, simply make another one. At most 5 unused codes
+  exist at a time.
+- **Lost a computer?** Devices → «Revoke» (or `doc-review devices revoke ID`):
+  its token stops working at once and its browser sessions end. The main token
+  can't be revoked from the page: change it in the Secret (see
+  [deploy.md](deploy.md#rotating-the-main-owner-token)).
+- Every device (and the main token) can make codes and revoke other devices.
+  The page marks the device you are using («this device»).
 
 ### Documents
 

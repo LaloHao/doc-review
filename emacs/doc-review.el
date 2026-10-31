@@ -1,7 +1,7 @@
 ;;; doc-review.el --- Reviewers' comments on your documents, next to the sources -*- lexical-binding: t; -*-
 
 ;; Author: Eduardo V.
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: outlines, tools, wp
 ;; URL: https://github.com/LaloHao/doc-review
@@ -30,6 +30,9 @@
 ;;   M-x doc-review-refresh           fetch the comments again
 ;;   M-x doc-review-list-documents    your documents on the server
 ;;   M-x doc-review-open-in-browser   the document (or the thread at point) on the web
+;;   M-x doc-review-enroll            make this computer an owner device with a
+;;                                    one-time code (no need to copy the token)
+;;   M-x doc-review-devices           your owner devices (x: revoke)
 ;;   doc-review-mode                  open comments as Flymake notes on the text
 ;;
 ;; All of them are in `doc-review-command-map', bound to C-c d by default
@@ -144,7 +147,25 @@ Tokens of other servers go in \"servers\": {\"https://…\": \"token\"}."
      (col-state . "State")
      (archived . "archived")
      (active . "active")
-     (no-document-here . "No document on this line"))
+     (no-document-here . "No document on this line")
+     (enroll-url-prompt . "doc-review server (https://…)")
+     (enroll-code-prompt . "One-time code (from the Devices page or `doc-review devices code'): ")
+     (enroll-name-prompt . "Name of this device")
+     (enroll-no-code . "No code")
+     (enroll-overwrite . "%s already has a server and token: replace them (a server of another origin is kept under \"servers\")? ")
+     (enroll-no-token . "doc-review: the server sent no token")
+     (enroll-save-failed . "%s could not be written (%s): the token is in the buffer *doc-review token*; save it yourself, mode 600")
+     (enrolled . "This computer is now the owner device «%s» of %s; its token is in %s (mode 600)")
+     (col-name . "Name")
+     (col-linked . "Linked")
+     (col-last-used . "Last used")
+     (revoked . "revoked")
+     (never . "never")
+     (this-device . " (this one)")
+     (no-device-here . "No device on this line")
+     (bootstrap-not-revocable . "The main token can't be revoked here: change OWNER_TOKEN_SHA256 in the server's Secret")
+     (revoke-device-prompt . "Revoke «%s»? Its token stops working and its web sessions end. ")
+     (device-revoked . "Device %s revoked"))
     (es
      (no-config . "No existe %s: créalo con {\"url\": …, \"token\": …} y chmod 600")
      (config-readable . "%s es legible por otros usuarios: ejecuta chmod 600 %s")
@@ -202,7 +223,25 @@ Tokens of other servers go in \"servers\": {\"https://…\": \"token\"}."
      (col-state . "Estado")
      (archived . "archivado")
      (active . "activo")
-     (no-document-here . "No hay un documento en esta línea")))
+     (no-document-here . "No hay un documento en esta línea")
+     (enroll-url-prompt . "Servidor de doc-review (https://…)")
+     (enroll-code-prompt . "Código de un solo uso (de la página Dispositivos o de `doc-review devices code'): ")
+     (enroll-name-prompt . "Nombre de este dispositivo")
+     (enroll-no-code . "Falta el código")
+     (enroll-overwrite . "%s ya tiene un servidor y un token: ¿reemplazarlos (un servidor de otro origen se conserva en \"servers\")? ")
+     (enroll-no-token . "doc-review: el servidor no envió un token")
+     (enroll-save-failed . "No se pudo escribir %s (%s): el token está en el buffer *doc-review token*; guárdalo tú, con modo 600")
+     (enrolled . "Esta computadora es ahora el dispositivo de autor «%s» de %s; su token está en %s (modo 600)")
+     (col-name . "Nombre")
+     (col-linked . "Vinculado")
+     (col-last-used . "Último uso")
+     (revoked . "revocado")
+     (never . "nunca")
+     (this-device . " (este)")
+     (no-device-here . "No hay un dispositivo en esta línea")
+     (bootstrap-not-revocable . "El token principal no se revoca aquí: cambia OWNER_TOKEN_SHA256 en el Secret del servidor")
+     (revoke-device-prompt . "¿Revocar «%s»? Su token deja de funcionar y sus sesiones web terminan. ")
+     (device-revoked . "Dispositivo %s revocado")))
   "User-facing messages, by `doc-review-language'.")
 
 (defun doc-review--t (key &rest args)
@@ -328,12 +367,12 @@ pick a server, but can't send your token to another one."
                                  (expand-file-name doc-review-project-file (doc-review-project-root project))))))
 
 (defun doc-review--headers (token &optional content-type)
-  "Request headers as unibyte strings.
+  "Request headers as unibyte strings (no Authorization when TOKEN is nil).
 url.el refuses to send a request whose headers are multibyte (strings read
 from JSON are) together with a binary body."
   (mapcar (lambda (h) (cons (car h) (encode-coding-string (cdr h) 'utf-8)))
-          (append `(("Authorization" . ,(concat "Bearer " token))
-                    ("Accept" . "application/json")
+          (append (when token `(("Authorization" . ,(concat "Bearer " token))))
+                  `(("Accept" . "application/json")
                     ("Accept-Language" . ,(symbol-name doc-review-language)))
                   (when content-type `(("Content-Type" . ,content-type))))))
 
@@ -349,27 +388,32 @@ from JSON are) together with a binary body."
                                    (if (stringp msg) (doc-review--sanitize msg) (format "HTTP %s" status))))))
     data))
 
+(defun doc-review--retrieve (url method headers &optional body)
+  "Send METHOD to URL with HEADERS and BODY (unibyte); return (STATUS . TEXT)."
+  (let* ((url-request-method method)
+         (url-request-extra-headers headers)
+         (url-request-data body)
+         (buffer (url-retrieve-synchronously url t t doc-review-timeout)))
+    (unless buffer (error (doc-review--t 'no-response url)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cons (bound-and-true-p url-http-response-status)
+                (progn
+                  (goto-char (point-min))
+                  (if (bound-and-true-p url-http-end-of-headers)
+                      (goto-char url-http-end-of-headers)
+                    (re-search-forward "\r?\n\r?\n" nil t))
+                  (decode-coding-string
+                   (buffer-substring-no-properties (point) (point-max)) 'utf-8))))
+      (kill-buffer buffer))))
+
 (defun doc-review--request (project method path &optional body content-type)
   "Send METHOD PATH to PROJECT's server with the owner token; return the JSON.
 BODY is a unibyte string sent with CONTENT-TYPE."
   (let* ((server (doc-review--server project))
-         (url-request-method method)
-         (url-request-extra-headers (doc-review--headers (cdr server) content-type))
-         (url-request-data body)
-         (buffer (url-retrieve-synchronously (concat (car server) path) t t doc-review-timeout)))
-    (unless buffer (error (doc-review--t 'no-response (car server))))
-    (unwind-protect
-        (with-current-buffer buffer
-          (let ((status (bound-and-true-p url-http-response-status))
-                (text (progn
-                        (goto-char (point-min))
-                        (if (bound-and-true-p url-http-end-of-headers)
-                            (goto-char url-http-end-of-headers)
-                          (re-search-forward "\r?\n\r?\n" nil t))
-                        (decode-coding-string
-                         (buffer-substring-no-properties (point) (point-max)) 'utf-8))))
-            (doc-review--handle-response status text)))
-      (kill-buffer buffer))))
+         (res (doc-review--retrieve (concat (car server) path) method
+                                    (doc-review--headers (cdr server) content-type) body)))
+    (doc-review--handle-response (car res) (cdr res))))
 
 (defun doc-review--json-body (object)
   "OBJECT as a unibyte UTF-8 JSON string."
@@ -1142,6 +1186,164 @@ RET or o: open in the browser; g: refresh."
       (unless noninteractive (pop-to-buffer (current-buffer)))
       docs)))
 
+;;; Devices: linking this computer, the list of devices
+
+(defun doc-review--config-json (&optional file)
+  "The config FILE (default `doc-review-config-file') parsed, or nil."
+  (let ((file (expand-file-name (or file doc-review-config-file))))
+    (and (file-readable-p file)
+         (ignore-errors
+           (with-temp-buffer
+             (insert-file-contents file)
+             (let ((v (doc-review--parse-json (buffer-string))))
+               (and (consp v) v)))))))
+
+(defun doc-review--config-server-p (json)
+  "Non-nil if the config JSON already has a server and a token."
+  (let ((u (alist-get 'url json)) (tok (alist-get 'token json)))
+    (and (stringp u) (> (length u) 0) (stringp tok) (> (length tok) 0))))
+
+(defun doc-review--write-config (file url token)
+  "Write URL and TOKEN to the config FILE, mode 0600 (its directory 0700).
+Other keys are kept; a previous server of another origin moves under
+\"servers\" instead of being lost.  Written to a temporary file and renamed."
+  (let* ((file (expand-file-name file))
+         (old (doc-review--config-json file))
+         (new (copy-alist old)))
+    (when (and (doc-review--config-server-p old)
+               (not (equal (doc-review--origin (alist-get 'url old)) (doc-review--origin url))))
+      (setf (alist-get 'servers new)
+            (append (cl-remove-if (lambda (s) (equal (car s) (intern (string-trim-right (alist-get 'url old) "/+"))))
+                                  (alist-get 'servers old))
+                    (list (cons (intern (string-trim-right (alist-get 'url old) "/+")) (alist-get 'token old))))))
+    (setf (alist-get 'url new) url
+          (alist-get 'token new) token)
+    (let ((dir (file-name-directory file))
+          (tmp (concat file ".tmp")))
+      (with-file-modes #o700 (make-directory dir t))
+      (with-file-modes #o600
+        (with-temp-file tmp
+          (set-buffer-multibyte nil)
+          (insert (encode-coding-string (json-serialize new) 'utf-8) "\n")))
+      (set-file-modes tmp #o600)
+      (rename-file tmp file t))
+    file))
+
+(defun doc-review--read-enroll-args ()
+  "Ask for the server, the code and this device's name."
+  (let* ((cfg (doc-review--config-json))
+         (configured (let ((u (alist-get 'url cfg))) (and (stringp u) (> (length u) 0) u)))
+         (url (read-string (format-prompt (doc-review--t 'enroll-url-prompt) configured)
+                           nil nil configured))
+         (code (read-string (doc-review--t 'enroll-code-prompt)))
+         (name (read-string (format-prompt (doc-review--t 'enroll-name-prompt) (system-name))
+                            nil nil (system-name))))
+    (list url code name)))
+
+;;;###autoload
+(defun doc-review-enroll (url code name)
+  "Make this computer an owner device of the server at URL with a one-time CODE.
+The owner makes the code on another device (the Devices page, or
+`doc-review devices code NAME'); it is valid for 10 minutes, once.  The
+server answers with a token of this device's own, called NAME, which is
+written to `doc-review-config-file' (mode 0600).  An existing server and
+token there are replaced only after you confirm it."
+  (interactive (doc-review--read-enroll-args))
+  (let* ((url (doc-review--check-url (string-trim url)))
+         (file (expand-file-name doc-review-config-file)))
+    (when (string-empty-p (string-trim code)) (user-error (doc-review--t 'enroll-no-code)))
+    (when (and (doc-review--config-server-p (doc-review--config-json file))
+               (not (yes-or-no-p (doc-review--t 'enroll-overwrite file))))
+      (user-error (doc-review--t 'cancelled)))
+    (let* ((res (doc-review--retrieve (concat url "/api/devices/enroll") "POST"
+                                      (doc-review--headers nil "application/json")
+                                      (doc-review--json-body `((code . ,(string-trim code))
+                                                               (name . ,(string-trim name))))))
+           (data (doc-review--handle-response (car res) (cdr res)))
+           (token (alist-get 'token data))
+           (got (doc-review--sanitize (or (alist-get 'name data) name))))
+      (unless (and (stringp token) (string-prefix-p "dr_owner_" token))
+        (error (doc-review--t 'enroll-no-token)))
+      (condition-case err
+          (doc-review--write-config file url token)
+        (error
+         ;; The code is spent: don't lose the token.
+         (with-current-buffer (get-buffer-create "*doc-review token*")
+           (erase-buffer)
+           (insert token "\n")
+           (unless noninteractive (pop-to-buffer (current-buffer))))
+         (error (doc-review--t 'enroll-save-failed file (error-message-string err)))))
+      (message "%s" (doc-review--t 'enrolled got url file))
+      got)))
+
+(defvar-local doc-review--devices-project nil
+  "Project (server) of a devices list buffer.")
+
+(defun doc-review--devices-entries (devices)
+  "Tabulated-list entries for DEVICES (the bootstrap token's id is `bootstrap')."
+  (mapcar (lambda (d)
+            (let ((id (or (alist-get 'id d) 'bootstrap)))
+              (list id
+                    (vector (if (eq id 'bootstrap) "-" (format "%s" id))
+                            (concat (doc-review--clean-line (alist-get 'name d))
+                                    (if (eq (alist-get 'current d) t) (doc-review--t 'this-device) ""))
+                            (if (alist-get 'created_at d) (doc-review--date (alist-get 'created_at d)) "-")
+                            (cond ((eq id 'bootstrap) "-")
+                                  ((alist-get 'last_used_at d) (doc-review--date (alist-get 'last_used_at d)))
+                                  (t (doc-review--t 'never)))
+                            (doc-review--t (if (eq (alist-get 'active d) t) 'active 'revoked))))))
+          devices))
+
+(defvar doc-review-devices-mode-map
+  (let ((m (make-sparse-keymap)))
+    (define-key m (kbd "x") #'doc-review-devices-revoke)
+    m)
+  "Keys of the devices list.")
+
+(define-derived-mode doc-review-devices-mode tabulated-list-mode "Doc-Review-Devices"
+  "Your owner devices on the doc-review server.
+x: revoke the device at point; g: refresh."
+  (add-hook 'tabulated-list-revert-hook #'doc-review--devices-revert nil t))
+
+(defun doc-review--devices-revert ()
+  "Fetch the devices list again."
+  (setq tabulated-list-entries
+        (doc-review--devices-entries
+         (alist-get 'devices (doc-review--request doc-review--devices-project "GET" "/api/devices")))))
+
+(defun doc-review-devices-revoke ()
+  "Revoke the device at point: its token stops working, its sessions end."
+  (interactive)
+  (let ((id (tabulated-list-get-id)))
+    (cond ((null id) (user-error (doc-review--t 'no-device-here)))
+          ((eq id 'bootstrap) (user-error (doc-review--t 'bootstrap-not-revocable))))
+    (when (yes-or-no-p (doc-review--t 'revoke-device-prompt
+                                      (aref (tabulated-list-get-entry) 1)))
+      (doc-review--request doc-review--devices-project "POST" (format "/api/devices/%d/revoke" id))
+      (message "%s" (doc-review--t 'device-revoked id))
+      (revert-buffer))))
+
+;;;###autoload
+(defun doc-review-devices ()
+  "List your owner devices on the server (of this project, or the configured one)."
+  (interactive)
+  (let* ((project (doc-review--current-project t))
+         (devices (alist-get 'devices (doc-review--request project "GET" "/api/devices"))))
+    (with-current-buffer (get-buffer-create "*doc-review devices*")
+      (doc-review-devices-mode)
+      (setq doc-review--devices-project project
+            tabulated-list-format
+            (vector (list "ID" 4 t)
+                    (list (doc-review--t 'col-name) 34 t)
+                    (list (doc-review--t 'col-linked) 18 t)
+                    (list (doc-review--t 'col-last-used) 18 t)
+                    (list (doc-review--t 'col-state) 10 t))
+            tabulated-list-entries (doc-review--devices-entries devices))
+      (tabulated-list-init-header)
+      (tabulated-list-print)
+      (unless noninteractive (pop-to-buffer (current-buffer)))
+      devices)))
+
 ;;; Flymake
 
 (defun doc-review--diagnostic-text (thread)
@@ -1276,6 +1478,7 @@ Meant for `org-mode-hook', `LaTeX-mode-hook', `latex-mode-hook' and
     (define-key m (kbd "m") #'doc-review-mode)
     (define-key m (kbd "l") #'doc-review-list-documents)
     (define-key m (kbd "b") #'doc-review-open-in-browser)
+    (define-key m (kbd "D") #'doc-review-devices)
     m)
   "Commands of doc-review, under `doc-review-keymap-prefix'.")
 (fset 'doc-review-command-map doc-review-command-map)

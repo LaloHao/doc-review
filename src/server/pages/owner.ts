@@ -1,8 +1,9 @@
 // The owner's pages: the dashboard (documents, people, channels, sessions), a
-// document's management page (versions, reviewers, settings) and a person's page.
+// document's management page (versions, reviewers, settings), a person's page
+// and the devices page.
 
 import { LANGS, translator, type Lang, type Tr } from "../../i18n/index.js";
-import type { Document, DocumentSummary, Invitation, InvitationWithDocument, InvitationWithPerson, Person, Version, Visibility } from "../../repo.js";
+import type { Document, DocumentSummary, Invitation, InvitationWithDocument, InvitationWithPerson, OwnerDevice, Person, Version, Visibility } from "../../repo.js";
 import { REPLY_NOTIFY, VISIBILITIES } from "../../repo.js";
 import { esc } from "../../text.js";
 import { progressSummary, progressTable, REPLY_KEY, roleDatalist, VISIBILITY_KEY } from "./common.js";
@@ -341,6 +342,51 @@ export function personPage(
             : `<p class="muted">${tr.e("person.archive_hint")}</p>
         <p><button type="button" id="archive-person" class="danger">${tr.e("person.archive")}</button></p>`
         }
+      </section>
+    </main>`,
+  );
+}
+
+/** The owner's devices: the bootstrap token, each device's token, and linking a new one. */
+export function devicesPage(
+  l: Layout,
+  input: { devices: OwnerDevice[]; current: number | null | undefined; url: string; maxCodes: number; minutes: number },
+): string {
+  const tr = l.tr;
+  const thisOne = `<span class="tag tag-done">${tr.e("devices.this_one")}</span>`;
+  const never = `<span class="muted">${tr.e("people.never")}</span>`;
+  const row = (d: OwnerDevice) => `<tr data-id="${d.id}"${d.revoked_at ? ` class="archived"` : ""}>
+      <td><strong>${esc(d.name)}</strong> ${input.current === d.id ? thisOne : ""}<div class="muted small">${tr.e("devices.id_n", { n: d.id })} · ${d.created_from === "bootstrap" ? tr.e("devices.from_bootstrap") : tr.e("devices.from_device", { n: d.created_from })}</div></td>
+      <td class="small">${esc(tr.date(d.created_at))}</td>
+      <td class="small">${d.last_used_at ? esc(tr.date(d.last_used_at)) : never}</td>
+      <td>${d.revoked_at ? `<span class="tag tag-revoked">${tr.e("inv.revoked")}</span><div class="muted small">${esc(tr.date(d.revoked_at))}</div>` : `<span class="tag tag-done">${tr.e("inv.active")}</span>`}</td>
+      <td class="actions">${d.revoked_at ? "" : `<button type="button" class="danger" data-action="revoke-device" data-id="${d.id}" data-name="${esc(d.name)}"${input.current === d.id ? ' data-current="1"' : ""}>${tr.e("inv.revoke")}</button>`}</td>
+    </tr>`;
+  return page(
+    { ...l, scripts: ["/static/admin.js"], data: { "public-url": input.url } },
+    `<main class="wide">
+      <p class="small"><a href="/">${tr.e("person.back")}</a></p>
+      <h1>${tr.e("devices.title")}</h1>
+      <p class="muted">${tr.e("devices.intro")}</p>
+      <table class="devices"><thead><tr><th>${tr.e("people.name")}</th><th>${tr.e("devices.created")}</th><th>${tr.e("devices.last_used")}</th><th>${tr.e("inv.status")}</th><th></th></tr></thead><tbody>
+        <tr class="bootstrap">
+          <td><strong>${tr.e("devices.bootstrap_name")}</strong> ${input.current === null ? thisOne : ""}</td>
+          <td class="small"><span class="muted">—</span></td>
+          <td class="small"><span class="muted">—</span></td>
+          <td><span class="tag tag-done">${tr.e("inv.active")}</span></td>
+          <td class="small muted">${tr.html("devices.bootstrap_hint", { var: "<code>OWNER_TOKEN_SHA256</code>" })}</td>
+        </tr>
+        ${input.devices.map(row).join("")}
+      </tbody></table>
+
+      <section>
+        <h2>${tr.e("devices.link_title")}</h2>
+        <p class="muted">${tr.e("devices.link_intro", { minutes: input.minutes, max: input.maxCodes })}</p>
+        <form id="enroll-form" class="stack">
+          <label>${tr.e("devices.name")} <input name="name" required maxlength="100" placeholder="${tr.e("devices.name_placeholder")}"></label>
+          <button type="submit">${tr.e("devices.link_submit")}</button>
+        </form>
+        <div id="enroll-result" class="link-result enroll-result" hidden role="status"></div>
       </section>
     </main>`,
   );

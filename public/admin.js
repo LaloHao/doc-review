@@ -266,3 +266,64 @@ document.getElementById("archive-button")?.addEventListener("click", async (e) =
     fail(err);
   }
 });
+
+// --- devices ---
+
+document.querySelector("table.devices")?.addEventListener("click", async (e) => {
+  const b = e.target.closest('[data-action="revoke-device"]');
+  if (!b) return;
+  const self = b.dataset.current === "1";
+  if (!confirm(t(self ? "js.revoke_device_self_confirm" : "js.revoke_device_confirm", { name: b.dataset.name }))) return;
+  try {
+    await api("POST", `/api/devices/${b.dataset.id}/revoke`, {});
+    if (self) location.href = "/login";
+    else location.reload();
+  } catch (err) {
+    fail(err);
+  }
+});
+
+let countdown = null;
+document.getElementById("enroll-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const box = document.getElementById("enroll-result");
+  let r;
+  try {
+    r = await api("POST", "/api/devices/enroll-codes", { name: f.elements.name.value });
+  } catch (err) {
+    fail(err);
+    return;
+  }
+  const expires = Date.parse(r.expires_at);
+  const left = el("p", { class: "muted" });
+  const code = el("p", { class: "enroll-code", text: r.code });
+  const tick = () => {
+    const s = Math.max(0, Math.round((expires - Date.now()) / 1000));
+    if (s === 0) {
+      left.textContent = t("js.enroll_expired");
+      code.classList.add("muted");
+      clearInterval(countdown);
+      return;
+    }
+    left.textContent = t("js.enroll_expires_in", { time: `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` });
+  };
+  clearInterval(countdown);
+  countdown = setInterval(tick, 1000);
+  tick();
+  box.replaceChildren(
+    el("p", {}, el("strong", { text: t("js.enroll_code_for", { name: r.name }) }), " — ", t("js.enroll_once")),
+    code,
+    left,
+    el("p", { text: t("js.enroll_emacs", { url: r.url }) }),
+    el("pre", { text: r.commands.emacs }),
+    el("p", { text: t("js.enroll_cli") }),
+    el("pre", { text: r.commands.cli }),
+    el("p", { text: t("js.enroll_curl") }),
+    el("pre", { text: r.commands.curl }),
+    el("p", {}, el("a", { href: location.pathname, text: t("js.refresh_list") })),
+  );
+  box.hidden = false;
+  box.scrollIntoView({ block: "nearest" });
+  f.reset();
+});

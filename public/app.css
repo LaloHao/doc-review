@@ -202,3 +202,7 @@ body.point-mode .textLayer span { cursor: crosshair; }
 
 tr.archived td { color: var(--muted); }
 .new-person[hidden] { display: none; }
+
+/* Devices: a one-time enrollment code */
+.enroll-code { font-family: ui-monospace, monospace; font-size: 2rem; letter-spacing: 0.15em; margin: 0.3rem 0; user-select: all; }
+.enroll-result pre { white-space: pre-wrap; word-break: break-all; background: var(--card); border: 1px solid var(--line); padding: 0.4rem 0.6rem; border-radius: 4px; }

@@ -173,4 +173,41 @@ create table reviewer_digest_runs (
 alter table people add column archived_at timestamptz;
 `,
   },
+  {
+    name: "003_owner_devices",
+    sql: `
+-- Owner credentials besides OWNER_TOKEN_SHA256 (the implicit «bootstrap»
+-- device): one token per device, stored hashed, revocable one by one. Every
+-- device token is a full owner credential.
+create table owner_devices (
+  id serial primary key,
+  name text not null,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz,
+  -- The device that issued the enrollment code: its id, or 'bootstrap'.
+  created_from text not null
+);
+
+-- One-time enrollment codes (stored hashed): short-lived, single use, and dead
+-- after a few wrong attempts.
+create table enroll_codes (
+  id serial primary key,
+  code_hash text not null unique,
+  device_name text not null,
+  created_by_device text not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  attempts integer not null default 0
+);
+create index enroll_codes_expires_idx on enroll_codes (expires_at);
+
+-- The device an owner session was opened with (null: the bootstrap token).
+-- Revoking a device deletes its sessions.
+alter table sessions add column owner_device_id integer references owner_devices(id) on delete cascade;
+create index sessions_owner_device_idx on sessions (owner_device_id);
+`,
+  },
 ];

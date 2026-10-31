@@ -7,7 +7,8 @@ describes what it protects, against whom, and how.
 
 - The PDFs of every version (and their extracted text).
 - The comments, their authors and their history.
-- The owner token (it can do everything), reviewers' personal links, sessions.
+- The owner tokens (the main one and each device's: any of them can do
+  everything), one-time enrollment codes, reviewers' personal links, sessions.
 - Notification credentials: the Telegram bot token, the SMTP password, S3 keys,
   database DSNs.
 
@@ -22,12 +23,15 @@ describes what it protects, against whom, and how.
 | Untrusted text (comments, names, titles) | XSS in the browser; terminal escape sequences in the CLI; markup or links in Emacs; formatting in Telegram/email; bidi tricks | Escaping, a tiny markup subset, control/bidi stripping on input and output, org fixed-width lines in Emacs, plain-text notifications |
 | A hostile PDF | Exhaust memory or CPU; exploit the parser | Size limit, magic bytes, parsing in a worker thread with a 512 MB heap and a 90 s timeout; the browser renders it with pdf.js under a strict CSP |
 | A malicious repository (`.doc-review.json`) | Send your owner token to another server | The project file only selects a server; its token must be configured for that origin in your private config file; https only |
-| A stolen laptop or browser | Use the owner's web session | «Close all sessions»; rotating the owner token ends every web session opened with the old one |
+| A stolen laptop or browser | Use the owner's token or web session | Each computer has its own device token: revoking it refuses the token and ends its sessions at once; «Close all sessions»; rotating the main token ends every web session opened with it |
+| Someone who sees or guesses an enrollment code | Link their own computer as an owner device | Codes live 10 minutes, work once, die after 5 wrong attempts in total; 50 bits; rate limits per IP and global; the device shows up on the Devices page |
+| A malicious web page | Make a visitor's browser redeem a code | The enrollment endpoint uses no cookies and refuses any `Origin` or `Sec-Fetch-Site` that isn't the site itself |
 | The logs | Leak secrets | Link paths are redacted, tokens and credentials are never logged, Telegram errors omit the URL |
 
 Out of scope: a compromised server or cluster (it holds everything), a
-compromised owner machine (it holds the token), and denial of service beyond what
-the rate limits and the single-replica design absorb.
+compromised owner machine while it is compromised (it holds a token; revoke
+that device), and denial of service beyond what the rate limits and the
+single-replica design absorb.
 
 ## Links and sessions
 
@@ -74,13 +78,70 @@ expiry, at most once an hour).
   cookies, so CSRF doesn't apply. On the web the token is entered once at
   `/login` (a pre-session double-submit cookie protects the form) and becomes a
   session.
-- The server only knows `OWNER_TOKEN_SHA256`; comparisons are timing-safe.
-- Owner sessions store a fingerprint of `OWNER_TOKEN_SHA256`: rotating the token
-  ends them (also at startup). «Close all sessions» (dashboard,
-  `POST /api/sessions/close-all`, `doc-review sessions close-all [--reviewers]`)
-  ends every owner web session and, optionally, every reviewer session.
+- The server only knows `OWNER_TOKEN_SHA256` and the hashes of device tokens;
+  comparisons are timing-safe.
+- Owner sessions store a fingerprint of the credential they were opened with:
+  rotating the main token ends its sessions (also at startup), revoking a device
+  ends that device's (see [below](#owner-devices-and-enrollment-codes)).
+  «Close all sessions» (dashboard, `POST /api/sessions/close-all`,
+  `doc-review sessions close-all [--reviewers]`) ends every owner web session
+  and, optionally, every reviewer session.
 - Clients refuse `http://` except for localhost, and send the token only to the
   server it was configured for (`config.json` mode 0600 is enforced).
+
+## Owner devices and enrollment codes
+
+The main («bootstrap») owner token is the one whose SHA-256 is
+`OWNER_TOKEN_SHA256`. Besides it, each computer can have a **device token** of
+its own (`dr_owner_` + 32 random bytes), stored as SHA-256 in `owner_devices`.
+
+- **Same powers.** A device token is a full owner credential: it publishes,
+  invites, makes enrollment codes and revokes other devices. Devices are a way
+  to *not spread* one long-lived secret and to cut one computer off without
+  touching the others, not a permission system.
+- **Lookup.** The bearer header and the web login accept the main token
+  (timing-safe compare of hashes) or an active device token (looked up by its
+  SHA-256, then compared in constant time). With `OWNER_TOKEN_SHA256` unset,
+  owner access is off for device tokens too.
+- **Sessions.** An owner web session stores the device it was opened with and
+  a fingerprint of that credential's hash; it is valid only while the
+  credential is: revoking a device deletes its sessions, rotating the main token
+  ends the main token's sessions (also at startup) and leaves device sessions
+  alone.
+- **Revocation** is immediate and can't be undone; the main token can't be
+  revoked from the API or the page (it would lock you out): rotate it in the
+  Secret ([deploy.md](deploy.md#rotating-the-main-owner-token)).
+- `last_used_at` is written at most once a minute per device, so you can spot
+  a device that is used when it shouldn't be.
+
+**Enrollment codes** let a new computer get a device token without the main
+token ever being copied, pasted in a chat or typed on that computer:
+
+- Made only by an owner (`POST /api/devices/enroll-codes`, the Devices page,
+  `doc-review devices code`); at most 5 unused at a time.
+- 10 characters of Crockford base32 (`K7Q2X-9XMPA`): 50 bits from the system's
+  CSPRNG, no ambiguous letters, typed case- and hyphen-insensitively.
+- Stored as SHA-256 only; a plain hash is enough because a code lives 10
+  minutes (an offline search of 2^50 hashes outlasts it), and a database
+  dump can't reveal used or expired codes.
+- Redeemed at the **public** `POST /api/devices/enroll`, which reads no cookie
+  and sets none (so CSRF doesn't apply); a request carrying an `Origin` other
+  than `PUBLIC_URL` (including `null`) or a `Sec-Fetch-Site` other than
+  `same-origin` is refused, so a page elsewhere can't drive a visitor's browser
+  to it. The CLI, Emacs and curl send neither header.
+- **Single use**: spending a code and creating the device happen in one
+  transaction (`update … where used_at is null … returning`), so two racing
+  requests can't both win. The token is in the response once and nowhere else.
+- **Guessing**: the server can't tell which code a wrong guess was meant for,
+  so every wrong (or malformed) attempt counts against *every* active code,
+  and a code is dead after 5. Together with 10 attempts per IP (per /64 for
+  IPv6) and 30 in total per 10 minutes, an attacker gets at most 5 guesses per
+  code: a chance of about 5 in 10^15. The price is that a stranger hammering the
+  endpoint can kill your active codes; you then make a new one.
+- Malformed codes go through the same hash lookup and update as wrong ones.
+- The logs say when a code was made and by which device, and when a device was
+  enrolled, failed to enroll (with the client IP) or was revoked — never a code
+  or a token.
 
 ## Requests
 
@@ -103,7 +164,7 @@ expiry, at most once an hour).
   translated message, never a database error or a stack trace in the logs.
 - **Rate limits** (per IP, IPv6 per /64, from `CF-Connecting-IP` behind
   Cloudflare): links 20/10 min, owner login 10/10 min, failed bearer tokens 30/10
-  min; writes 60/min per person; at most `MAX_REVIEWER_COMMENTS_PER_DAY` threads
+  min, device enrollment 10/10 min (and 30/10 min for everyone); writes 60/min per person; at most `MAX_REVIEWER_COMMENTS_PER_DAY` threads
   and replies per reviewer in 24 hours over all documents. At most 10 000 keys in
   memory.
 

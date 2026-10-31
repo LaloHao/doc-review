@@ -5,7 +5,8 @@ import { execFile } from "node:child_process";
 import { access, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseArgs, promisify } from "node:util";
-import { ApiError, Client, findProjectConfig, loadClientConfig, projectPdf, type ProjectConfig } from "./client.js";
+import { hostname } from "node:os";
+import { ApiError, checkConfigWritable, checkServerUrl, Client, configPath, enrollDevice, findProjectConfig, loadClientConfig, projectPdf, saveClientConfig, type ProjectConfig } from "./client.js";
 import { loadConfig } from "./config.js";
 import { migrate, openDb } from "./db/db.js";
 import { fmtThread, oneLine } from "./format.js";
@@ -52,6 +53,15 @@ Reviewers:
   doc-review invitations rotate ID [--send-link]     new link; the old one and its sessions stop working
   doc-review invitations revoke ID
   doc-review sessions close-all [--reviewers]        end your web sessions (and the reviewers')
+
+Devices (each computer with its own owner token):
+  doc-review devices list
+  doc-review devices code "Name"                     a one-time code (10 minutes) to link a new computer
+  doc-review devices revoke ID                       its token stops working, its web sessions end
+  doc-review enroll CODE [--url URL] [--name NAME] [--force]
+                                       on the new computer: redeem the code and save the token
+                                       in config.json (mode 0600); --force replaces a configured
+                                       server (it moves under "servers" if it's another one)
 `;
 
 const run = promisify(execFile);
@@ -123,6 +133,15 @@ interface Person {
   notify_versions: boolean;
   archived?: boolean;
   invitations?: { id: number; document: string; role: string; active: boolean }[];
+}
+interface Device {
+  id: number | null;
+  name: string;
+  bootstrap: boolean;
+  active: boolean;
+  current: boolean;
+  created_at: string | null;
+  last_used_at: string | null;
 }
 interface Inv {
   id: number;
@@ -394,6 +413,74 @@ async function main(argv: string[]): Promise<number> {
       const c = await client(values, await project());
       const r = await c.json<{ closed: { owner: number; reviewers: number } }>("POST", "/api/sessions/close-all", { reviewers: values.reviewers === true });
       console.log(`sessions closed: ${r.closed.owner} of yours, ${r.closed.reviewers} of reviewers`);
+      return 0;
+    }
+
+    case "devices": {
+      const [sub = "list", ...more] = rest;
+      const { values, positionals } = args(more, {});
+      const c = await client(values, await project());
+      if (sub === "list") {
+        const { devices } = await c.request<{ devices: Device[] }>("GET", "/api/devices");
+        console.log(line("ID", "NAME", "LINKED", "LAST USED", "STATE"));
+        for (const d of devices) {
+          console.log(line(d.id ?? "bootstrap", `${d.name}${d.current ? " (this one)" : ""}`, d.created_at ?? "-", d.bootstrap ? "-" : (d.last_used_at ?? "never"), d.active ? "active" : "revoked"));
+        }
+        return 0;
+      }
+      if (sub === "revoke") {
+        const id = Number(positionals[0]);
+        if (positionals[0] === "bootstrap") throw new Error("the main token can't be revoked here: change OWNER_TOKEN_SHA256 in the server's Secret (docs/deploy.md)");
+        if (!Number.isInteger(id) || id < 1) throw new Error("usage: doc-review devices revoke ID");
+        const r = await c.json<{ device: Device; sessions_closed: number }>("POST", `/api/devices/${id}/revoke`, {});
+        console.log(`revoked: device ${id} (${oneLine(r.device.name)}); ${r.sessions_closed} web session(s) closed`);
+        return 0;
+      }
+      if (sub === "code") {
+        const name = positionals[0];
+        if (!name) throw new Error('usage: doc-review devices code "Name"');
+        const r = await c.json<{ code: string; name: string; expires_at: string; expires_in: number; commands: { cli: string; emacs: string; curl: string } }>(
+          "POST",
+          "/api/devices/enroll-codes",
+          { name },
+        );
+        console.log(`code for ${oneLine(r.name)}: ${r.code}`);
+        console.log(`valid for ${Math.round(r.expires_in / 60)} minutes (until ${new Date(r.expires_at).toLocaleTimeString()}), once`);
+        console.log("on the new computer:");
+        console.log(`  Emacs:  ${r.commands.emacs}   (the server URL, then the code)`);
+        console.log(`  CLI:    ${oneLine(r.commands.cli)}`);
+        console.log(`  curl:   ${oneLine(r.commands.curl)}`);
+        return 0;
+      }
+      throw new Error(`unknown command: devices ${sub}`);
+    }
+
+    case "enroll": {
+      const { values, positionals } = args(rest, { name: { type: "string" }, force: { type: "boolean" } });
+      const code = positionals[0];
+      if (!code) throw new Error("usage: doc-review enroll CODE [--url URL] [--name NAME] [--force]");
+      const path = configPath();
+      let url = values.url as string | undefined;
+      if (!url) {
+        try {
+          url = (await loadClientConfig(path)).url;
+        } catch {
+          throw new Error("which server? use --url https://…");
+        }
+      }
+      url = checkServerUrl(url);
+      await checkConfigWritable(path, values.force === true);
+      const name = ((values.name as string | undefined) ?? hostname()).trim() || "computer";
+      const r = await enrollDevice(url, code, name);
+      try {
+        await saveClientConfig(path, r.url, r.token);
+      } catch (e) {
+        // The code is spent: don't lose the token.
+        console.error(`the token could not be saved in ${path} (${(e as Error).message}); save it yourself, mode 600:\n  ${r.token}`);
+        return 1;
+      }
+      console.log(`this computer is now the owner device «${oneLine(r.name)}» of ${r.url}`);
+      console.log(`its token is in ${path} (mode 600); try: doc-review documents list`);
       return 0;
     }
 

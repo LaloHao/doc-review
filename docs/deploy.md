@@ -18,6 +18,30 @@ The first line is the token (it goes in your `~/.config/doc-review/config.json`,
 mode 600); the second is its SHA-256, the only thing the server stores
 (`OWNER_TOKEN_SHA256`).
 
+Other computers don't need this token: link each one as an owner *device*
+with a one-time code (see [usage.md](usage.md#a-second-computer-without-the-token)).
+
+### Rotating the main owner token
+
+The main («bootstrap») token can't be revoked from the Devices page, because it
+lives in the Secret. To replace it (it leaked, or you want to retire it):
+
+1. `doc-review gen-token` (or the `docker run … gen-token` above) for a new
+   token and its SHA-256.
+2. Put the new SHA-256 in the Secret's `OWNER_TOKEN_SHA256` (for a
+   SOPS-encrypted Secret in a GitOps repository: `sops secret.yaml`, change the
+   key, commit) and restart the pod, which reads the Secret only at startup:
+   `kubectl -n doc-review rollout restart deployment/doc-review` (use your
+   namespace and release name).
+3. Put the new token in `~/.config/doc-review/config.json` of the computer that
+   used the old one.
+
+At startup the server ends every web session opened with the old token; the
+old token stops working at once. **Device tokens keep working**: if a device
+might be compromised too, revoke it on the Devices page or with
+`doc-review devices revoke ID`. Removing `OWNER_TOKEN_SHA256` altogether turns
+owner access off, device tokens included.
+
 ## 2. Database
 
 - **PostgreSQL** (recommended): create a database with two roles, an admin role
@@ -84,7 +108,9 @@ doc-review invite -d thesis "Dr. Jane Doe" --email jane@… --role "Director"
 doc-review publish -d thesis thesis.pdf progress.json -m "First draft"
 ```
 
-Sign in once in the browser at `/login` with the owner token.
+Sign in once in the browser at `/login` with the owner token. To work from
+another computer, link it from the **Devices** page instead of copying the
+token.
 
 ## Backups
 
