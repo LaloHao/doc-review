@@ -1,8 +1,12 @@
 // Owner devices and enrollment codes: the migration, device tokens on the API
 // and the web, revocation, the public enrollment endpoint and its limits, the
-// devices page.
+// devices page, and the CLI's enroll (config file written 0600).
 
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { checkConfigWritable, Client, enrollDevice, loadClientConfig, saveClientConfig } from "../src/client.js";
 import { migrate, openDb, pendingMigrations } from "../src/db/db.js";
 import { ownerSessionFingerprint, Repo } from "../src/repo.js";
 import { CROCKFORD, newEnrollCode, normalizeEnrollCode, sha256Hex } from "../src/server/crypto.js";
@@ -353,5 +357,60 @@ describe("devices", () => {
     const r = await enrolled(s, ((await ok.json()) as CodeReply).code);
     expect((await owner.send("POST", `/api/devices/${r.device.id}/revoke`, {}, { "x-csrf-token": "" })).status).toBe(403);
     expect((await owner.send("POST", `/api/devices/${r.device.id}/revoke`, {})).status).toBe(200);
+  });
+});
+
+describe("enrolling from the command line", () => {
+  let s: TestServer;
+  let dir: string;
+  beforeAll(async () => {
+    s = await startTestServer();
+    dir = await mkdtemp(join(tmpdir(), "dr-enroll-"));
+  });
+  afterAll(async () => {
+    await s.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("redeems a code and writes config.json with mode 0600; the token then works", async () => {
+    const path = join(dir, "new", "doc-review", "config.json");
+    await checkConfigWritable(path, false);
+    const c = await makeCode(s, "Mac");
+    const r = await enrollDevice(s.url, c.code, "mac.local");
+    expect(r.name).toBe("mac.local");
+    await saveClientConfig(path, r.url, r.token);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, "new", "doc-review"))).mode & 0o777).toBe(0o700);
+    const cfg = await loadClientConfig(path);
+    expect(cfg).toEqual({ url: s.url, token: r.token });
+    const { documents } = await new Client(cfg).request<{ documents: unknown[] }>("GET", "/api/documents");
+    expect(Array.isArray(documents)).toBe(true);
+    // A spent code: the server's message.
+    await expect(enrollDevice(s.url, c.code, "again")).rejects.toThrow(/Invalid, used or expired code/);
+  });
+
+  it("refuses to replace a configured server unless forced, keeping the other keys", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({ url: "https://old.example", token: "dr_owner_old", servers: { "https://x.example": "dr_owner_x" } }), { mode: 0o644 });
+    await expect(checkConfigWritable(path, false)).rejects.toThrow(/already has a server and token .*--force/);
+    await checkConfigWritable(path, true);
+    await saveClientConfig(path, s.url, "dr_owner_new");
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      url: s.url,
+      token: "dr_owner_new",
+      servers: { "https://x.example": "dr_owner_x", "https://old.example": "dr_owner_old" },
+    });
+  });
+
+  it("only over https (http only for this machine)", async () => {
+    await expect(enrollDevice("http://review.example.com", "AAAAA-AAAAA", "x")).rejects.toThrow(/https/);
+    const seen: string[] = [];
+    const fake = (async (u: string | URL | Request) => {
+      seen.push(String(u));
+      return new Response(JSON.stringify({ error: "Invalid, used or expired code." }), { status: 400 });
+    }) as typeof fetch;
+    await expect(enrollDevice("https://review.example.com/", "AAAAA-AAAAA", "x", fake)).rejects.toThrow(/Invalid/);
+    expect(seen).toEqual(["https://review.example.com/api/devices/enroll"]);
   });
 });

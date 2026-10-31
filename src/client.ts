@@ -6,7 +6,7 @@
 // token for it must be in config.json (a repository can't send your token
 // elsewhere).
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { cleanText } from "./text.js";
@@ -234,4 +234,97 @@ export interface ThreadJson {
   url: string;
   section: { id: string; title: string } | null;
   comments: { id: number; author: { name: string; role?: string }; body: string | null; created_at: string; deleted: boolean }[];
+}
+
+// --- enrolling this computer as an owner device ---
+
+/** The config file's server and token, if it has them (any other keys are kept on rewrite). */
+async function readRawConfig(path: string): Promise<Record<string, unknown> | null> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+const hasServer = (raw: Record<string, unknown> | null) =>
+  raw !== null && typeof raw.url === "string" && raw.url !== "" && typeof raw.token === "string" && raw.token !== "";
+
+/**
+ * Whether `path` may receive a new server and token: refused when it already
+ * has some, unless `force`. Checked before enrolling, so a code isn't spent
+ * on a token that can't be saved.
+ */
+export async function checkConfigWritable(path: string, force: boolean): Promise<void> {
+  const raw = await readRawConfig(path);
+  if (hasServer(raw) && !force) {
+    throw new Error(`${path} already has a server and token (${String(raw!.url)}): use --force to replace them (the other keys are kept)`);
+  }
+}
+
+/**
+ * Writes `url` and `token` to the config file, mode 0600 (its directory 0700
+ * when created). Other keys are kept; a previous server of another origin
+ * moves under "servers" instead of being lost. Written to a temporary file
+ * and renamed, so a failure never leaves half a file.
+ */
+export async function saveClientConfig(path: string, url: string, token: string): Promise<void> {
+  const raw = (await readRawConfig(path)) ?? {};
+  const out: Record<string, unknown> = { ...raw, url, token };
+  if (hasServer(raw)) {
+    let oldOrigin = "";
+    try {
+      oldOrigin = new URL(String(raw.url)).origin;
+    } catch {
+      /* not a URL: dropped */
+    }
+    if (oldOrigin && oldOrigin !== new URL(url).origin) {
+      const servers = raw.servers && typeof raw.servers === "object" && !Array.isArray(raw.servers) ? (raw.servers as Record<string, unknown>) : {};
+      out.servers = { ...servers, [oldOrigin]: raw.token };
+    }
+  }
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(out, null, 2) + "\n", { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, path);
+}
+
+export interface Enrolled {
+  token: string;
+  name: string;
+  url: string;
+}
+
+/**
+ * Redeems a one-time enrollment code at `url` (https, or http on this
+ * machine): the server creates an owner device and returns its token, once.
+ */
+export async function enrollDevice(url: string, code: string, name: string, fetchImpl: typeof fetch = fetch): Promise<Enrolled> {
+  const base = checkServerUrl(url);
+  const res = await fetchImpl(`${base}/api/devices/enroll`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", "accept-language": "en" },
+    body: JSON.stringify({ code, name }),
+  });
+  const text = await res.text();
+  let data: Record<string, unknown> | null = null;
+  try {
+    data = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    /* not JSON */
+  }
+  if (!res.ok) {
+    const msg = data?.error;
+    throw new ApiError(res.status, typeof msg === "string" ? cleanText(msg).slice(0, 500) : `HTTP ${res.status}`);
+  }
+  if (typeof data?.token !== "string" || !data.token.startsWith("dr_owner_")) throw new Error("the server sent no token");
+  return { token: data.token, name: typeof data.name === "string" ? cleanText(data.name) : name, url: base };
 }
