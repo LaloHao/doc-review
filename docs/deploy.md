@@ -71,6 +71,7 @@ Create a Secret (never created by the chart) and pass its name as
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | no | Telegram notifications (bot from @BotFather) |
 | `SMTP_PASSWORD` | no | SMTP password or token (see «Email» below) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | s3 | unless `storage.s3.credentialsSecret` is set |
+| `OTEL_EXPORTER_OTLP_HEADERS` | no | auth headers for an OTLP collector that needs them (`k=v,k=v`) |
 
 The admin DSN goes in a separate Secret, `migrations.adminSecretName`, read only
 by the migration Job.
@@ -111,6 +112,60 @@ doc-review publish -d thesis thesis.pdf progress.json -m "First draft"
 Sign in once in the browser at `/login` with the owner token. To work from
 another computer, link it from the **Devices** page instead of copying the
 token.
+
+## Telemetry with a Grafana stack
+
+Optional, and off unless you set it (see the README, «Telemetry (optional)»,
+for what is logged, traced and measured, and the privacy rules). For a cluster
+with Grafana Alloy, Loki, Tempo and kube-prometheus-stack in the `monitoring`
+namespace — Alloy scraping pod stdout into Loki and receiving OTLP on
+`alloy.monitoring.svc.cluster.local` (4317 gRPC, 4318 HTTP) for Tempo:
+
+```yaml
+telemetry:
+  logFormat: json          # Loki gets one JSON object per line from stdout
+  logLevel: info
+  otlp:
+    endpoint: http://alloy.monitoring.svc.cluster.local:4318   # OTLP/HTTP (JSON), not 4317
+    serviceName: doc-review
+    resourceAttributes: deployment.environment=prod
+    networkPolicy:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      port: 4318
+metrics:
+  enabled: true
+  port: 9464
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack   # the default ServiceMonitor selector of that release
+    interval: 30s
+  networkPolicy:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+```
+
+- **Logs (Loki)**: nothing to configure besides `logFormat: json`; Alloy picks up
+  stdout. In Grafana, `{namespace="doc-review"} | json` gives the fields:
+  `event="http_request"`, `route`, `status`, `duration_ms`, `role`, `doc`;
+  `trace_id` links a line to its trace (a Loki derived field on `trace_id` →
+  Tempo makes it a link).
+- **Traces (Tempo)**: `otlp.endpoint` is the base URL; doc-review posts to
+  `/v1/traces`. With `networkPolicy.enabled` the chart adds an egress rule to
+  that namespace and port only (the internet rule excludes private ranges, so
+  without it the export is blocked). A collector that is down only costs a
+  warning in the logs, at most once a minute.
+- **Metrics (Prometheus)**: a separate port named `metrics`, on the Service but
+  never exposed through the tunnel (point cloudflared at the `http` port only);
+  the NetworkPolicy lets only `monitoring` reach it. Without prometheus-operator,
+  scrape `http://<service>.<namespace>.svc:9464/metrics` yourself.
+- **`telemetry.logIdentities: true`** adds reviewers' names, emails, IPs and
+  user agents to the log lines (not to traces or metrics) for your own security
+  auditing. Tell your reviewers, and restrict who can query Loki and how long it
+  keeps logs.
 
 ## Backups
 

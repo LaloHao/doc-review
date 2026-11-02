@@ -54,6 +54,34 @@ export interface Config {
   /** Hour (0-23, in TZ) of the owner's daily digest; null = no digest. */
   digestHour: number | null;
   timeZone: string;
+  /** Logs, traces and metrics: all optional, off by default. */
+  telemetry: TelemetryConfig;
+}
+
+export type LogFormat = "text" | "json";
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export interface TracesConfig {
+  /** Where spans are POSTed (OTLP/HTTP JSON): …/v1/traces. */
+  url: string;
+  /** OTEL_EXPORTER_OTLP_HEADERS (auth). Secret: never logged. */
+  headers: Record<string, string>;
+  serviceName: string;
+  /** OTEL_RESOURCE_ATTRIBUTES. */
+  resourceAttributes: Record<string, string>;
+  /** Share of new traces kept (0-1); traces continued from a traceparent follow its sampled flag. */
+  sampleRatio: number;
+}
+
+export interface TelemetryConfig {
+  logFormat: LogFormat;
+  logLevel: LogLevel;
+  /** Add who made each request (person, email, client IP, user agent) to log lines. */
+  logIdentities: boolean;
+  /** null = no tracing (OTEL_EXPORTER_OTLP_ENDPOINT unset, or OTEL_SDK_DISABLED). */
+  traces: TracesConfig | null;
+  /** Port of the separate /metrics listener; null = no metrics. */
+  metricsPort: number | null;
 }
 
 function str(env: NodeJS.ProcessEnv, name: string, fallback = ""): string {
@@ -75,6 +103,66 @@ function int(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const n = Number(v);
   if (!Number.isInteger(n)) throw new Error(`${name} must be an integer`);
   return n;
+}
+
+/** "k=v,k=v" (OTEL_RESOURCE_ATTRIBUTES, OTEL_EXPORTER_OTLP_HEADERS); values may be percent-encoded. */
+export function parseKeyValues(s: string, name: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of s.split(",")) {
+    if (part.trim() === "") continue;
+    const i = part.indexOf("=");
+    const k = i > 0 ? part.slice(0, i).trim() : "";
+    // The value itself is never put in the error: these may be credentials.
+    if (!k) throw new Error(`${name} must be a list of key=value pairs`);
+    let v = part.slice(i + 1).trim();
+    try {
+      v = decodeURIComponent(v);
+    } catch {
+      // Not percent-encoded: keep it as written.
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
+export function loadTelemetryConfig(env: NodeJS.ProcessEnv = process.env): TelemetryConfig {
+  const logFormat = (str(env, "LOG_FORMAT", "text").toLowerCase() || "text") as LogFormat;
+  if (!["text", "json"].includes(logFormat)) throw new Error("LOG_FORMAT must be text or json");
+  const logLevel = (str(env, "LOG_LEVEL", "info").toLowerCase() || "info") as LogLevel;
+  if (!["debug", "info", "warn", "error"].includes(logLevel)) throw new Error("LOG_LEVEL must be debug, info, warn or error");
+
+  let traces: TracesConfig | null = null;
+  const base = str(env, "OTEL_EXPORTER_OTLP_ENDPOINT").replace(/\/+$/, "");
+  const tracesUrl = str(env, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+  if ((base || tracesUrl) && !bool(env, "OTEL_SDK_DISABLED", false)) {
+    const url = tracesUrl || `${base}/v1/traces`;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error("OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL");
+    const ratioRaw = str(env, "OTEL_TRACES_SAMPLER_ARG");
+    const sampleRatio = ratioRaw === "" ? 1 : Number(ratioRaw);
+    if (!Number.isFinite(sampleRatio) || sampleRatio < 0 || sampleRatio > 1) throw new Error("OTEL_TRACES_SAMPLER_ARG must be a number from 0 to 1");
+    const resourceAttributes = parseKeyValues(str(env, "OTEL_RESOURCE_ATTRIBUTES"), "OTEL_RESOURCE_ATTRIBUTES");
+    traces = {
+      url,
+      headers: parseKeyValues(str(env, "OTEL_EXPORTER_OTLP_HEADERS"), "OTEL_EXPORTER_OTLP_HEADERS"),
+      serviceName: str(env, "OTEL_SERVICE_NAME") || resourceAttributes["service.name"] || "doc-review",
+      resourceAttributes,
+      sampleRatio,
+    };
+  }
+
+  let metricsPort: number | null = null;
+  if (str(env, "METRICS_PORT") !== "") {
+    metricsPort = int(env, "METRICS_PORT", 0);
+    if (metricsPort < 0 || metricsPort > 65535) throw new Error("METRICS_PORT must be 0-65535");
+  }
+
+  return { logFormat, logLevel, logIdentities: bool(env, "LOG_IDENTITIES", false), traces, metricsPort };
 }
 
 export function parseS3Url(url: string): { bucket: string; prefix: string } {
@@ -173,14 +261,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     notifyInstant: bool(env, "NOTIFY_INSTANT", true),
     digestHour,
     timeZone: str(env, "TZ", "America/Mexico_City") || "America/Mexico_City",
+    telemetry: loadTelemetryConfig(env),
   };
 }
 
 /** Hour of the reviewers' daily reply digests: DIGEST_HOUR, or 8:00 when unset. */
 export const reviewerDigestHour = (c: Config): number => c.digestHour ?? 8;
 
+/** Telemetry that is on, without endpoints' credentials; "" when everything is off. */
+export function describeTelemetry(t: TelemetryConfig): string {
+  const parts = [
+    t.logFormat !== "text" ? `logs ${t.logFormat}` : null,
+    t.logLevel !== "info" ? `log level ${t.logLevel}` : null,
+    t.logIdentities ? "identities logged (LOG_IDENTITIES)" : null,
+    t.traces ? `traces on (${new URL(t.traces.url).host}, service ${t.traces.serviceName}${t.traces.sampleRatio < 1 ? `, ratio ${t.traces.sampleRatio}` : ""})` : null,
+    t.metricsPort !== null ? `metrics on :${t.metricsPort}` : null,
+  ];
+  return parts.filter(Boolean).join(", ");
+}
+
 /** What is enabled, without any secret value. */
 export function describeConfig(c: Config): string {
+  const tel = describeTelemetry(c.telemetry);
   return [
     `public url ${c.publicUrl}`,
     `database ${c.databaseUrl.startsWith("pglite:") ? "pglite (embedded)" : "postgres"}`,
@@ -189,5 +291,8 @@ export function describeConfig(c: Config): string {
     `telegram ${c.telegram ? "on" : "off"}`,
     `email ${c.smtp ? `on (${c.smtp.host}:${c.smtp.port} ${c.smtp.security})` : "off"}`,
     `digest ${c.digestHour === null ? "off" : `${c.digestHour}:00 ${c.timeZone}`}`,
-  ].join(", ");
+    tel || null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 }

@@ -82,7 +82,11 @@ export function versionRoutes(r: Router<Ctx>, app: App): void {
     const data = new Uint8Array(await pdf.arrayBuffer());
     let extracted;
     try {
-      extracted = await extractPdf(data);
+      extracted = await app.telemetry.tracer.withSpan("pdf.extract", { attributes: { "docreview.pdf.size_bytes": data.length } }, async (span) => {
+        const r = await extractPdf(data);
+        span?.setAttribute("docreview.pdf.page_count", r.pageCount);
+        return r;
+      });
     } catch (e) {
       if (e instanceof PdfError) throw new HttpError(400, e.key, e.params);
       throw e;
@@ -100,7 +104,13 @@ export function versionRoutes(r: Router<Ctx>, app: App): void {
       progress,
       sectionPages: locateSections(extracted.pages, progress),
     });
-    log(`document #${doc.id} version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`);
+    app.telemetry.metrics.versionPublished();
+    log.info("version_published", `document #${doc.id} version ${v.number} published (${extracted.pageCount} pages, ${data.length} bytes)`, {
+      doc: doc.slug,
+      version: v.number,
+      pages: extracted.pageCount,
+      bytes: data.length,
+    });
     app.later(async () => {
       await app.diffFor(v);
     });

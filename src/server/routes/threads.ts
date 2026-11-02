@@ -27,9 +27,9 @@ export function threadRoutes(r: Router<Ctx>, app: App): void {
         if (!mine || !cm || (cm.author.kind === "reviewer" && cm.author.person_id === p.id) || !participates(mine, p.id)) continue;
         try {
           await notifier.replyToReviewer(doc, p, mine, cm);
-          log(`reply notification emailed to person #${p.id}`);
+          log.info("reply_emailed", `reply notification emailed to person #${p.id}`, { person_id: p.id, doc: doc.slug, thread_id: threadId });
         } catch (e) {
-          log(`reply email failed for person #${p.id}: ${(e as Error).message}`);
+          log.warn("reply_email_failed", `reply email failed for person #${p.id}: ${(e as Error).message}`, { person_id: p.id, doc: doc.slug, thread_id: threadId }, { error: e });
         }
       }
     });
@@ -70,6 +70,8 @@ export function threadRoutes(r: Router<Ctx>, app: App): void {
     const body = str(b.body, "field.comment", 10_000, { required: true });
     const id = await repo.createThread(v, { page, anchor, quote: anchor === "text" ? quote : "", rects, body }, viewer);
     const { thread } = await app.threadFor(c, id);
+    app.telemetry.metrics.commentCreated(viewer.kind);
+    log.info("comment_created", `thread #${id} opened`, { role: viewer.kind, doc: doc.slug, version: v.number, page, thread_id: id, comment_id: thread.comments[0]!.id }, { quietText: true });
     notifyComment(doc, id, thread.comments[0]!.id);
     json(c.res, 201, { thread: out(thread) });
   });
@@ -88,6 +90,8 @@ export function threadRoutes(r: Router<Ctx>, app: App): void {
     const b = await readJson(c.req);
     const body = str(b.body, "field.reply", 10_000, { required: true });
     const commentId = await repo.addReply(thread.id, body, viewer);
+    app.telemetry.metrics.replyCreated(viewer.kind);
+    log.info("reply_created", `reply #${commentId} in thread #${thread.id}`, { role: viewer.kind, doc: doc.slug, thread_id: thread.id, comment_id: commentId }, { quietText: true });
     notifyComment(doc, thread.id, commentId);
     json(c.res, 201, { thread: out((await app.threadFor(c, thread.id)).thread), comment_id: commentId });
   });

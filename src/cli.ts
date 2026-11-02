@@ -13,6 +13,7 @@ import { fmtThread, oneLine } from "./format.js";
 import { progressFromOrg } from "./progress.js";
 import { newOwnerToken, sha256Hex } from "./server/crypto.js";
 import { startServer } from "./server/main.js";
+import { createTelemetry } from "./telemetry/index.js";
 
 const HELP = `doc-review — reviewers comment on PDF versions of your documents
 
@@ -175,10 +176,12 @@ async function main(argv: string[]): Promise<number> {
 
     case "migrate": {
       const c = loadConfig();
-      const db = await openDb(c.databaseAdminUrl);
+      // Logs only (LOG_FORMAT, LOG_LEVEL): no traces or metrics for a one-off job.
+      const { log } = createTelemetry({ ...c.telemetry, traces: null, metricsPort: null });
+      const db = await openDb(c.databaseAdminUrl, { log });
       const applied = await migrate(db);
       await db.close();
-      console.log(applied.length ? `applied: ${applied.join(", ")}` : "no pending migrations");
+      log.info("migrations_applied", applied.length ? `applied: ${applied.join(", ")}` : "no pending migrations", { migrations: applied.join(","), count: applied.length });
       return 0;
     }
 

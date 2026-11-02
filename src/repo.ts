@@ -89,6 +89,8 @@ export interface OwnerDevice {
  */
 export interface OwnerCredential {
   deviceId: number | null;
+  /** For the logs (LOG_IDENTITIES only). */
+  deviceName?: string;
   fp: string;
 }
 

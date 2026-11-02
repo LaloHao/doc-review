@@ -103,7 +103,7 @@ export function deviceRoutes(r: Router<Ctx>, app: App): void {
     const code = newEnrollCode();
     const by = c.session!.deviceId;
     const expires = await repo.createEnrollCode(sha256Hex(normalizeEnrollCode(code)!), name, by === null || by === undefined ? "bootstrap" : String(by), ENROLL_CODE_TTL_MS);
-    log(`enrollment code created by ${who(by)}, valid until ${expires.toISOString()}`);
+    log.info("enroll_code_created", `enrollment code created by ${who(by)}, valid until ${expires.toISOString()}`, { by: who(by), expires_at: expires.toISOString() });
     json(c.res, 201, {
       code,
       name,
@@ -130,10 +130,14 @@ export function deviceRoutes(r: Router<Ctx>, app: App): void {
     // A malformed code goes through the same lookup (and counts as a wrong attempt).
     const done = config.ownerTokenSha256 ? await repo.redeemEnrollCode(sha256Hex(code ?? "-"), name, MAX_CODE_ATTEMPTS) : null;
     if (!done) {
-      log(`device enrollment failed from ${c.ip}`);
+      log.warn("device_enroll_failed", "device enrollment failed", {}, { text: `device enrollment failed from ${c.ip}` });
       throw new HttpError(400, "err.enroll_code");
     }
-    log(`device #${done.device.id} enrolled from ${c.ip} (code made by ${done.createdBy === "bootstrap" ? "bootstrap" : `device #${done.createdBy}`})`);
+    const madeBy = done.createdBy === "bootstrap" ? "bootstrap" : `device #${done.createdBy}`;
+    app.identify({ device_id: done.device.id, device_name: done.device.name });
+    log.info("device_enrolled", `device #${done.device.id} enrolled (code made by ${madeBy})`, { device_id: done.device.id, code_made_by: madeBy }, {
+      text: `device #${done.device.id} enrolled from ${c.ip} (code made by ${madeBy})`,
+    });
     json(c.res, 201, { token: done.token, name: done.device.name, url: config.publicUrl, device: deviceJson(done.device, done.device.id) });
   });
 
@@ -145,7 +149,7 @@ export function deviceRoutes(r: Router<Ctx>, app: App): void {
     const done = await repo.revokeDevice(id);
     if (!done) throw new HttpError(404, "err.no_device");
     const by = c.session!.deviceId;
-    log(`device #${id} revoked by ${who(by)}: ${done.sessions} session(s) closed`);
+    log.info("device_revoked", `device #${id} revoked by ${who(by)}: ${done.sessions} session(s) closed`, { device_id: id, by: who(by), sessions_closed: done.sessions });
     // A browser that revoked its own device just lost its session.
     const self = !c.bearer && by === id;
     json(c.res, 200, { device: deviceJson(done.device, by), sessions_closed: done.sessions }, self ? { "set-cookie": cookie(SESSION_COOKIE, "", 0) } : {});

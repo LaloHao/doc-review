@@ -60,7 +60,7 @@ export function settingsRoutes(r: Router<Ctx>, app: App): void {
     app.checkCsrf(c);
     const b = c.req.headers["content-type"]?.startsWith("application/json") ? await readJson(c.req) : {};
     const closed = await repo.closeAllSessions(b.reviewers === true);
-    log(`sessions closed by the owner: ${closed.owner} owner, ${closed.reviewers} reviewer`);
+    log.info("sessions_closed", `sessions closed by the owner: ${closed.owner} owner, ${closed.reviewers} reviewer`, { owner_sessions: closed.owner, reviewer_sessions: closed.reviewers });
     json(c.res, 200, { closed }, c.bearer ? {} : { "set-cookie": cookie(SESSION_COOKIE, "", 0) });
   });
 

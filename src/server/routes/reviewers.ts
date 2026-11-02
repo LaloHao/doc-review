@@ -56,7 +56,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
     if (!wanted) return { sent: false };
     try {
       await notifier.sendLink(doc, p, app.linkOf(secret));
-      log(`link emailed to person #${p.id} (document #${doc.id})`);
+      log.info("link_emailed", `link emailed to person #${p.id} (document #${doc.id})`, { person_id: p.id, doc: doc.slug });
       return { sent: true };
     } catch (e) {
       return { sent: false, error: (e as Error).message };
@@ -113,7 +113,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
       notify_versions: b.notify_versions === true,
       notify_replies: b.notify_replies === undefined ? "never" : replyNotify(b.notify_replies),
     });
-    log(`person #${p.id} created`);
+    log.info("person_created", `person #${p.id} created`, { person_id: p.id });
     json(c.res, 201, { person: personJson(p) });
   });
 
@@ -147,7 +147,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
     const res = await repo.deletePerson(id);
     if (res === "not_found") throw new HttpError(404, "err.no_person");
     if (res === "has_comments") throw new HttpError(409, "err.person_has_comments");
-    log(`person #${id} deleted`);
+    log.info("person_deleted", `person #${id} deleted`, { person_id: id });
     json(c.res, 200, { deleted: true });
   });
 
@@ -158,7 +158,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
       const id = toInt(c.params[0]);
       const p = await repo.setPersonArchived(id, archived);
       if (!p) throw new HttpError(404, "err.no_person");
-      log(`person #${id} ${archived ? "archived" : "unarchived"}`);
+      log.info(archived ? "person_archived" : "person_unarchived", `person #${id} ${archived ? "archived" : "unarchived"}`, { person_id: id });
       json(c.res, 200, { person: personJson(p) });
     });
   }
@@ -191,12 +191,12 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
       const email = emailField(b.email);
       if (sendLink && !email) throw new HttpError(409, "err.no_email_address", { name });
       person = await repo.createPerson({ name, email });
-      log(`person #${person.id} created`);
+      log.info("person_created", `person #${person.id} created`, { person_id: person.id });
     }
     if (sendLink) canSendLink(person);
     const created = await repo.createInvitation(doc.id, person.id, role);
     if (!created) throw new HttpError(409, "err.already_invited");
-    log(`invitation #${created.invitation.id} created (document #${doc.id}, person #${person.id})`);
+    log.info("invitation_created", `invitation #${created.invitation.id} created (document #${doc.id}, person #${person.id})`, { invitation_id: created.invitation.id, doc: doc.slug, person_id: person.id });
     const mail = await maybeSendLink(doc, person, created.secret, sendLink);
     json(c.res, 201, { invitation: invitationJson(created.invitation, { person, document: doc }), link: app.linkOf(created.secret), email: mail });
   });
@@ -223,7 +223,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
     notArchived(person);
     if (sendLink) canSendLink(person);
     const res = await repo.rotateInvitation(invitation.id);
-    log(`invitation #${invitation.id} link rotated`);
+    log.info("invitation_rotated", `invitation #${invitation.id} link rotated`, { invitation_id: invitation.id, doc: doc.slug });
     const mail = await maybeSendLink(doc, person, res!.secret, sendLink);
     json(c.res, 200, { invitation: invitationJson(res!.invitation, { person, document: doc }), link: app.linkOf(res!.secret), email: mail });
   });
@@ -231,7 +231,7 @@ export function reviewerRoutes(r: Router<Ctx>, app: App): void {
   r.post("/api/invitations/:id/revoke", async (c) => {
     const { invitation, doc, person } = await invitationOr404(c);
     const i = await repo.revokeInvitation(invitation.id);
-    log(`invitation #${invitation.id} revoked`);
+    log.info("invitation_revoked", `invitation #${invitation.id} revoked`, { invitation_id: invitation.id, doc: doc.slug });
     json(c.res, 200, { invitation: invitationJson(i!, { person, document: doc }) });
   });
 }

@@ -48,6 +48,9 @@ reports for clients or any other document you build as a PDF.
   computer links itself with a one-time code (10 minutes, single use) typed in
   Emacs, the CLI or curl, so the long-lived token never travels through a chat.
 - **English and Spanish** user interface, server messages and emails.
+- **Optional telemetry**, off by default: JSON logs, OpenTelemetry traces
+  (OTLP/HTTP) and Prometheus metrics on a separate port, with no extra
+  dependencies. See [Telemetry (optional)](#telemetry-optional).
 
 Documentation: [docs/usage.md](docs/usage.md) (owner and reviewer workflows,
 notifications setup), [docs/emacs.md](docs/emacs.md),
@@ -85,6 +88,7 @@ short guide for Spanish-speaking reviewers,
 | `src/progress.ts` | `progress.json` validation (and the `avance.json` alias); generation from org includes |
 | `src/notify/notify.ts` | Telegram, SMTP, digests, reviewer emails |
 | `src/storage.ts` | PDF storage: directory or S3 |
+| `src/telemetry/` | Optional logs (`log.ts`), traces (`trace.ts`: tracer, OTLP JSON exporter, `traceparent`), metrics (`metrics.ts`), service wrappers (`instrument.ts`), scrubbing (`sanitize.ts`) |
 | `src/cli.ts`, `src/client.ts`, `src/format.ts` | CLI (server and owner commands) |
 | `public/` | Browser code: `viewer.js` (pdf.js, selection, threads), `admin.js`, `common.js`, `i18n-format.js` |
 | `emacs/` | Emacs client and its ERT tests |
@@ -181,6 +185,8 @@ The full threat model and the list of measures are in
   only to the server it was configured for.
 - The container runs as non-root with a read-only root file system and no
   capabilities; an optional NetworkPolicy limits traffic.
+- Optional telemetry never exports secrets, raw paths, names, emails, comment
+  text or IPs; metrics have their own port, not the public one.
 
 ## Running locally
 
@@ -244,6 +250,16 @@ refreshes `docs/images/`.
 | `NOTIFY_INSTANT` | `true` | `false`: digests only |
 | `DIGEST_HOUR` | — | 0–23 in `TZ`; unset = no owner digest (reviewers' digests then go at 8:00) |
 | `TZ` | `America/Mexico_City` | Time zone of digests and server-rendered dates |
+| `LOG_FORMAT` | `text` | `text` (plain messages, as always) or `json` (one object per line); see [Telemetry](#telemetry-optional) |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `LOG_IDENTITIES` | `false` | `true`: log lines also say who acted (person, email, client IP, user agent); personal data, see [Telemetry](#telemetry-optional) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/HTTP base URL; traces go to `…/v1/traces` (JSON). Unset = no traces |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | The full traces URL, used as is (instead of the above) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | `k=v,k=v` sent with each export (auth); secret, never logged |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | `doc-review`, — | Resource of the spans; attributes as `k=v,k=v` |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Share of new traces kept (0–1); a request with a sampled `traceparent` follows it |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns traces off even with an endpoint |
+| `METRICS_PORT` | — | Port of a separate listener serving `GET /metrics` (Prometheus); unset = no metrics |
 
 ### Clients (CLI and Emacs)
 
@@ -281,9 +297,81 @@ refreshes `docs/images/`.
 | `resources` | 50m / 192Mi requests, 1Gi limit | Parsing a large PDF needs headroom |
 | `podAnnotations`, `nodeSelector`, `tolerations` | `{}`, `{}`, `[]` | |
 | `service.port` | `8080` | |
+| `telemetry.logFormat`, `.logLevel`, `.logIdentities` | `text`, `info`, `false` | `LOG_FORMAT`, `LOG_LEVEL`, `LOG_IDENTITIES` (the migration Job gets the first two too) |
+| `telemetry.otlp.endpoint`, `.serviceName`, `.resourceAttributes`, `.samplerRatio` | `""`, `doc-review`, `""`, `1` | `OTEL_EXPORTER_OTLP_ENDPOINT` (`""` = no traces), `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER_ARG`. Auth headers go in the Secret (`OTEL_EXPORTER_OTLP_HEADERS`) |
+| `telemetry.otlp.networkPolicy.namespaceSelector`, `.port` | `{}`, `4318` | With `networkPolicy.enabled` and an endpoint: egress to the collector (`{}` = any namespace) |
+| `metrics.enabled`, `.port` | `false`, `9464` | `METRICS_PORT`; a `metrics` container and Service port |
+| `metrics.serviceMonitor.enabled`, `.labels`, `.interval` | `false`, `{}`, `30s` | A prometheus-operator `ServiceMonitor` (e.g. labels `{release: kube-prometheus-stack}`) |
+| `metrics.networkPolicy.namespaceSelector` | `{}` | With `networkPolicy.enabled`: who may reach the metrics port (`{}` = any namespace) |
 
 **Proton Mail**: SMTP submission works with paid plans and only for
 custom-domain addresses: see [docs/usage.md](docs/usage.md#email-proton-mail).
+
+## Telemetry (optional)
+
+Everything is **off by default**: without the variables below nothing is sent
+anywhere, no extra port is opened, and the logs are the same plain messages as
+always (to stdout). All of it is hand-rolled on Node built-ins (no OpenTelemetry
+SDK, no Prometheus client): exports are batched, bounded and time-limited, and a
+broken collector never slows down or breaks the app (failures are logged at most
+once a minute; on shutdown pending spans get 2 seconds).
+
+**Logs.** `LOG_FORMAT=json` writes one object per line: `time`, `level`,
+`event`, `msg`, the event's fields and, inside a traced request, `trace_id` and
+`span_id`. Besides the events doc-review always logged (sessions, invitations,
+devices, versions, digests, failed notifications, errors with a scrubbed stack)
+it adds one `http_request` line per request (`method`, `route` — the route
+pattern such as `/a/:secret`, never the path —, `status`, `duration_ms`, `role`
+owner/reviewer/anonymous, the document slug and numeric ids), `comment_created`
+/ `reply_created`, `notification_sent` (channel, ok/failed, duration),
+`rate_limited`, rejected links and tokens. In the text format those added
+events are debug-level, so `LOG_FORMAT=text` output only changes with
+`LOG_LEVEL=debug`. Health checks are logged at debug only.
+
+**Traces.** With `OTEL_EXPORTER_OTLP_ENDPOINT` (OTLP/HTTP with a JSON body;
+gRPC and protobuf are not supported), each request is a `SERVER` span named
+`METHOD /route/pattern` with `http.request.method`, `http.route`,
+`http.response.status_code` and `url.scheme`, continuing an incoming W3C
+`traceparent`. Child spans: database queries (`CLIENT`, `db.system`
+`postgresql` or `pglite`, `db.operation.name` and the table — never the SQL
+text or its parameters), PDF storage, PDF text extraction, diffs, SMTP and
+Telegram sends; and root spans for the digest runs and migrations. Health
+checks are not traced.
+
+**Metrics.** With `METRICS_PORT` (e.g. `9464`) a second listener — not the
+public port — serves `GET /metrics` in the Prometheus text format:
+`docreview_http_requests_total{method,route,status}`,
+`docreview_http_request_duration_seconds{method,route}`,
+`docreview_comments_created_total{role}`, `docreview_replies_created_total{role}`,
+`docreview_versions_published_total`, `docreview_notifications_total{channel,result}`,
+`docreview_db_query_duration_seconds{operation}`, `docreview_build_info{version}`,
+and `process_start_time_seconds`, `process_cpu_seconds_total`,
+`process_resident_memory_bytes`, `nodejs_heap_size_used_bytes`,
+`nodejs_eventloop_lag_seconds` (mean since the last scrape; also `_p99_` and
+`_max_`). Labels are route patterns and fixed sets, never paths or ids.
+
+**Privacy.** Spans, metrics and (by default) logs never contain tokens, link
+secrets (paths are reduced to route patterns), cookies, `Authorization`
+headers, names, email addresses, comment or reply text, PDF content or IP
+addresses; error messages and stacks are scrubbed of tokens, link paths,
+credentials in URLs and email addresses. `OTEL_EXPORTER_OTLP_HEADERS` is never
+logged; put it in the Secret.
+
+**`LOG_IDENTITIES=true`** (off by default) is for auditing your own server: log
+lines — never spans or metrics — also carry who acted: for a reviewer
+`person_id`, `person_name`, `person_email` and `invitation_id`; for you
+`actor: owner` and the device; for every request `client_ip` (from
+`CF-Connecting-IP` with `TRUST_PROXY=cloudflare`, else the socket) and
+`user_agent` (200 characters at most). Opened, invalid and rejected links and
+tokens, rate-limit hits, logins, device enrollments and new comments are then
+attributable. Tokens, secret links, cookies and comment text are still never
+logged. **This records personal data of your reviewers** (names, emails, IP
+addresses): tell them (for example in the invitation or a privacy note), and keep
+access to the log store and its retention restricted. The startup line says
+whether identities are logged.
+
+With a Grafana stack (Alloy, Loki, Tempo, Prometheus) — the values to set are in
+[docs/deploy.md](docs/deploy.md#telemetry-with-a-grafana-stack).
 
 ## Tests
 
@@ -295,7 +383,7 @@ make smoke         # end to end (local server, fake SMTP, CLI, Emacs batch)
 ```
 
 No test uses the network: notifications go to fake Telegram/SMTP transports, S3
-is tested with a fake `fetch`. The Emacs evil test runs when evil and evil-org
+is tested with a fake `fetch`, traces go to a fake OTLP collector on localhost. The Emacs evil test runs when evil and evil-org
 are on the load path: `make test-emacs EMACS_LOAD_PATH="…/evil …/evil-org …/goto-chg"`.
 
 ## API (owner token or session; one public endpoint)

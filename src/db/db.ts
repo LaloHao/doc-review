@@ -4,6 +4,7 @@
 //   so the same SQL and migrations run everywhere without a database server.
 
 import { mkdirSync } from "node:fs";
+import type { Logger } from "../telemetry/log.js";
 import { MIGRATIONS } from "./migrations.js";
 
 export interface Queryable {
@@ -47,10 +48,13 @@ async function openPglite(url: string): Promise<Db> {
   };
 }
 
-async function openPg(url: string): Promise<Db> {
+async function openPg(url: string, log?: Logger): Promise<Db> {
   const { default: pg } = await import("pg");
   const pool = new pg.Pool({ connectionString: url, max: 5 });
-  pool.on("error", (err) => console.error("postgres pool error:", err.message));
+  pool.on("error", (err) => {
+    if (log && log.format === "json") log.error("db_pool_error", `postgres pool error: ${err.message}`, {}, { error: err });
+    else console.error("postgres pool error:", err.message);
+  });
   return {
     query: async <T>(sql: string, params: unknown[] = []) =>
       (await pool.query(sql, params)).rows as T[],
@@ -74,9 +78,9 @@ async function openPg(url: string): Promise<Db> {
   };
 }
 
-export async function openDb(url: string): Promise<Db> {
+export async function openDb(url: string, opts: { log?: Logger } = {}): Promise<Db> {
   if (url.startsWith("pglite:")) return openPglite(url);
-  if (url.startsWith("postgres://") || url.startsWith("postgresql://")) return openPg(url);
+  if (url.startsWith("postgres://") || url.startsWith("postgresql://")) return openPg(url, opts.log);
   throw new Error("DATABASE_URL must be postgres://… or pglite:<dir>|pglite:memory");
 }
 

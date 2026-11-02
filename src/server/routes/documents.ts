@@ -135,7 +135,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
       default_role: line(b.default_role, "field.role", 100),
     });
     if (!d) throw new HttpError(409, "err.slug_taken");
-    app.log(`document #${d.id} created`);
+    app.log.info("document_created", `document #${d.id} created`, { doc: d.slug });
     json(c.res, 201, { document: documentJson(app, d) });
   });
 
@@ -167,7 +167,7 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
     app.checkCsrf(c);
     const { doc } = await app.documentFor(c, c.params[0]);
     const d = await repo.setArchived(doc.id, archived);
-    app.log(`document #${doc.id} ${archived ? "archived" : "unarchived"}`);
+    app.log.info(archived ? "document_archived" : "document_unarchived", `document #${doc.id} ${archived ? "archived" : "unarchived"}`, { doc: doc.slug });
     json(c.res, 200, { document: documentJson(app, d!) });
   };
   r.post("/api/documents/:slug/archive", setArchived(true));

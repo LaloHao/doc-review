@@ -9,6 +9,8 @@ import { negotiate, translator, type Lang, type Tr } from "../i18n/index.js";
 import type { Notifier } from "../notify/notify.js";
 import { ownerSessionFingerprint, type Document, type Invitation, type OwnerCredential, type Repo, type Session, type ThreadOut, type Version, type Viewer } from "../repo.js";
 import type { BlobStore } from "../storage.js";
+import { createTelemetry, type Logger, type Telemetry } from "../telemetry/index.js";
+import { currentScope, type Identity } from "../telemetry/scope.js";
 import { safeEqual, sha256Hex } from "./crypto.js";
 import { HttpError } from "./http.js";
 import type { Layout } from "./pages/layout.js";
@@ -24,7 +26,8 @@ export interface AppDeps {
   repo: Repo;
   store: BlobStore;
   notifier: Notifier;
-  log?: (msg: string) => void;
+  /** Logger, tracer and metrics (default: all off, text logs to stdout). */
+  telemetry?: Telemetry;
 }
 
 export interface Ctx {
@@ -37,6 +40,8 @@ export interface Ctx {
   bearer: boolean;
   /** From Accept-Language: API messages and pages outside a document. */
   lang: Lang;
+  /** The matched route pattern (never the raw path: paths may hold secrets). */
+  route: string | null;
 }
 
 /** A document the viewer may see, and the reviewer's invitation to it. */
@@ -47,6 +52,14 @@ export interface DocAccess {
 
 /** What route modules get: the dependencies plus shared guards and services. */
 export interface App extends Required<AppDeps> {
+  log: Logger;
+  /**
+   * Adds who is acting to this request's log lines; a no-op unless
+   * LOG_IDENTITIES is on. Never pass tokens or secrets.
+   */
+  identify(fields: Record<string, string | number | null | undefined>): void;
+  /** identify() for a reviewer: person id, name, email and the invitation. */
+  identifyPerson(p: { id: number; name: string; email: string | null }, invitationId?: number): void;
   limits: { link: RateLimiter; login: RateLimiter; bearer: RateLimiter; write: RateLimiter; enroll: RateLimiter; enrollGlobal: RateLimiter };
   viewerOf(c: Ctx): Viewer;
   requireOwner(c: Ctx): Viewer;
@@ -80,7 +93,16 @@ export function langOf(req: IncomingMessage): Lang {
 
 export function createAppContext(deps: AppDeps): App {
   const { config, repo } = deps;
-  const log = deps.log ?? ((m: string) => console.log(m));
+  const telemetry = deps.telemetry ?? createTelemetry();
+  const log = telemetry.log;
+  const identify = (fields: Record<string, string | number | null | undefined>) => {
+    if (!log.identities) return;
+    const who: Identity | null | undefined = currentScope()?.identity;
+    if (!who) return;
+    for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null) who[k] = v;
+  };
+  const identifyPerson = (p: { id: number; name: string; email: string | null }, invitationId?: number) =>
+    identify({ actor: "reviewer", person_id: p.id, person_name: p.name, person_email: p.email, invitation_id: invitationId });
   const limits = {
     link: new RateLimiter(20, 10 * 60_000),
     login: new RateLimiter(10, 10 * 60_000),
@@ -112,7 +134,11 @@ export function createAppContext(deps: AppDeps): App {
 
   const limited = (limiter: RateLimiter, key: string) => {
     const wait = limiter.hit(key);
-    if (wait > 0) throw new HttpError(429, "err.rate_limited", {}, { "retry-after": String(wait) });
+    if (wait > 0) {
+      const name = Object.entries(limits).find(([, l]) => l === limiter)?.[0] ?? "other";
+      log.warn("rate_limited", `rate limited (${name})`, { limiter: name, retry_after_s: wait }, { quietText: true });
+      throw new HttpError(429, "err.rate_limited", {}, { "retry-after": String(wait) });
+    }
   };
 
   const documentFor = async (c: Ctx, slug: string | undefined): Promise<DocAccess> => {
@@ -122,6 +148,7 @@ export function createAppContext(deps: AppDeps): App {
     if (viewer.kind === "owner") return { doc, invitation: null };
     const invitation = await repo.activeInvitation(viewer.personId!, doc.id);
     if (!invitation) throw new HttpError(404, "err.no_document");
+    identify({ invitation_id: invitation.id });
     return { doc, invitation };
   };
 
@@ -135,7 +162,7 @@ export function createAppContext(deps: AppDeps): App {
     if (stored !== undefined) return stored;
     let p = diffsInFlight.get(v.id);
     if (!p) {
-      p = (async () => {
+      p = telemetry.tracer.withSpan("diff.compute", { childOnly: true, attributes: { "docreview.version": v.number } }, async () => {
         const prev = await repo.previousVersion(v);
         const d = prev
           ? diffVersions(
@@ -145,7 +172,7 @@ export function createAppContext(deps: AppDeps): App {
           : null;
         await repo.storeDiff(v.id, d);
         return d;
-      })().finally(() => diffsInFlight.delete(v.id));
+      }).finally(() => diffsInFlight.delete(v.id));
       diffsInFlight.set(v.id, p);
     }
     return p;
@@ -153,7 +180,10 @@ export function createAppContext(deps: AppDeps): App {
 
   return {
     ...deps,
+    telemetry,
     log,
+    identify,
+    identifyPerson,
     limits,
     viewerOf,
     requireOwner(c) {
@@ -189,7 +219,7 @@ export function createAppContext(deps: AppDeps): App {
       const device = await repo.deviceByTokenHash(hash);
       if (!device) return null;
       await repo.touchDevice(device.id);
-      return { deviceId: device.id, fp: ownerSessionFingerprint(hash) };
+      return { deviceId: device.id, deviceName: device.name, fp: ownerSessionFingerprint(hash) };
     },
     documentFor,
     requireWritable(doc) {
@@ -216,7 +246,7 @@ export function createAppContext(deps: AppDeps): App {
         try {
           await fn();
         } catch (e) {
-          log(`notify error: ${(e as Error).message}`);
+          log.warn("notify_error", `notify error: ${(e as Error).message}`, {}, { error: e });
         }
       }),
     diffFor,
