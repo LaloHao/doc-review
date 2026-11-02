@@ -30,6 +30,7 @@ jobs:
       - run: helm lint deploy/helm/doc-review --set publicUrl=https://revision.example.com --set envSecretName=doc-review-env --set migrations.adminSecretName=doc-review-db-admin
       - run: helm template t deploy/helm/doc-review --set publicUrl=https://revision.example.com --set envSecretName=doc-review-env --set migrations.adminSecretName=doc-review-db-admin --set networkPolicy.enabled=true > /dev/null
       - run: helm template t deploy/helm/doc-review --set publicUrl=https://revision.example.com --set database.type=embedded > /dev/null
+      - run: helm template t deploy/helm/doc-review --set publicUrl=https://revision.example.com --set envSecretName=doc-review-env --set migrations.adminSecretName=doc-review-db-admin --set networkPolicy.enabled=true --set telemetry.logFormat=json --set telemetry.otlp.endpoint=http://alloy.monitoring.svc.cluster.local:4318 --set metrics.enabled=true --set metrics.serviceMonitor.enabled=true > /dev/null
 
   emacs:
     runs-on: ubuntu-latest

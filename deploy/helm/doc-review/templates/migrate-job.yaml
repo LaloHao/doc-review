@@ -37,6 +37,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["migrate"]
           env:
+            - name: LOG_FORMAT
+              value: {{ .Values.telemetry.logFormat | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.telemetry.logLevel | quote }}
             - name: DATABASE_ADMIN_URL
               valueFrom:
                 secretKeyRef:

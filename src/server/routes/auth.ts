@@ -37,8 +37,13 @@ export function authRoutes(r: Router<Ctx>, app: App): void {
     c.res.setHeader("referrer-policy", "no-referrer");
     const found = await repo.invitationByLink(secret);
     const tr = translator(found?.document.language ?? c.lang);
-    if (!found) return html(c.res, 404, messagePage(tr, tr("link.invalid_title"), tr("link.invalid")));
+    if (!found) {
+      log.warn("link_invalid", "invitation link invalid or revoked", {}, { quietText: true });
+      return html(c.res, 404, messagePage(tr, tr("link.invalid_title"), tr("link.invalid")));
+    }
     const { invitation, person, document } = found;
+    app.identifyPerson(person, invitation.id);
+    log.info("link_opened", "invitation link opened", { doc: document.slug, invitation_id: invitation.id }, { quietText: true });
     const target = `/d/${document.slug}`;
     if (c.session?.kind === "reviewer" && c.session.person?.id === person.id) {
       await repo.addSessionInvitation(c.session.idHash, invitation.id);
@@ -49,7 +54,7 @@ export function authRoutes(r: Router<Ctx>, app: App): void {
       await repo.deleteSession(c.session.idHash);
     }
     const s = await repo.createSession("reviewer", person.id, REVIEWER_TTL, invitation.id);
-    log(`reviewer session created for person #${person.id} (invitation #${invitation.id})`);
+    log.info("session_created", `reviewer session created for person #${person.id} (invitation #${invitation.id})`, { role: "reviewer", person_id: person.id, invitation_id: invitation.id, doc: document.slug });
     redirect(c.res, target, { "set-cookie": cookie(SESSION_COOKIE, s.id, REVIEWER_TTL / 1000) });
   };
 
@@ -76,14 +81,15 @@ export function authRoutes(r: Router<Ctx>, app: App): void {
     if (!pre || !safeEqual(form.get("_csrf") ?? "", pre)) throw new HttpError(403, "err.form_expired");
     const cred = await app.ownerCredential((form.get("token") ?? "").trim());
     if (!cred) {
-      log(`owner login failed from ${c.ip}`);
+      log.warn("owner_login_failed", "owner login failed", {}, { text: `owner login failed from ${c.ip}` });
       const fresh = newSecret(24);
       const tr = translator(c.lang);
       return html(c.res, 401, loginPage(tr, fresh, tr("login.wrong")), { "set-cookie": cookie(PRE_COOKIE, fresh, 3600) });
     }
     if (c.session) await repo.deleteSession(c.session.idHash);
     const s = await repo.createSession("owner", null, OWNER_TTL, undefined, cred);
-    log(`owner session created (${cred.deviceId === null ? "bootstrap token" : `device #${cred.deviceId}`})`);
+    app.identify({ actor: "owner", device_id: cred.deviceId ?? undefined, device_name: cred.deviceName });
+    log.info("session_created", `owner session created (${cred.deviceId === null ? "bootstrap token" : `device #${cred.deviceId}`})`, { role: "owner", device_id: cred.deviceId });
     redirect(c.res, "/", { "set-cookie": [cookie(SESSION_COOKIE, s.id, OWNER_TTL / 1000), cookie(PRE_COOKIE, "", 0)] });
   });
 

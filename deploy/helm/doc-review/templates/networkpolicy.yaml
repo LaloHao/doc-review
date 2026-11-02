@@ -24,6 +24,15 @@ spec:
       ports:
         - port: http
           protocol: TCP
+    {{- if $.Values.metrics.enabled }}
+    # Prometheus scrapes the metrics port (and only it).
+    - from:
+        - namespaceSelector:
+            {{- toYaml $.Values.metrics.networkPolicy.namespaceSelector | nindent 12 }}
+      ports:
+        - port: metrics
+          protocol: TCP
+    {{- end }}
   egress:
     - to:
         - namespaceSelector:
@@ -55,6 +64,15 @@ spec:
         - port: {{ . }}
           protocol: TCP
         {{- end }}
+    {{- if $.Values.telemetry.otlp.endpoint }}
+    # The OTLP collector (traces).
+    - to:
+        - namespaceSelector:
+            {{- toYaml $.Values.telemetry.otlp.networkPolicy.namespaceSelector | nindent 12 }}
+      ports:
+        - port: {{ $.Values.telemetry.otlp.networkPolicy.port }}
+          protocol: TCP
+    {{- end }}
     {{- with .extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -367,12 +367,12 @@ describe("router", () => {
     const r = new Router<string>();
     const h = async () => undefined;
     r.get("/a/:id", h).post("/a/:id/x", h).get("/static/(.+)", h);
-    expect(r.match("GET", "/a/12")).toEqual({ handler: h, params: ["12"] });
+    expect(r.match("GET", "/a/12")).toEqual({ handler: h, params: ["12"], route: "/a/:id", names: ["id"] });
     expect(r.match("HEAD", "/a/12")).toMatchObject({ params: ["12"] });
     expect(r.match("POST", "/a/12")).toEqual({ status: 405 });
     expect(r.match("GET", "/a/12/y")).toEqual({ status: 404 });
     expect(r.match("GET", "/a/1%2F2")).toMatchObject({ params: ["1%2F2"] });
-    expect(r.match("GET", "/static/x/y.css")).toMatchObject({ params: ["x/y.css"] });
+    expect(r.match("GET", "/static/x/y.css")).toMatchObject({ params: ["x/y.css"], route: "/static/(.+)", names: ["*"] });
   });
 });
 

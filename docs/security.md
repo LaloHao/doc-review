@@ -27,6 +27,7 @@ describes what it protects, against whom, and how.
 | Someone who sees or guesses an enrollment code | Link their own computer as an owner device | Codes live 10 minutes, work once, die after 5 wrong attempts in total; 50 bits; rate limits per IP and global; the device shows up on the Devices page |
 | A malicious web page | Make a visitor's browser redeem a code | The enrollment endpoint uses no cookies and refuses any `Origin` or `Sec-Fetch-Site` that isn't the site itself |
 | The logs | Leak secrets | Link paths are redacted, tokens and credentials are never logged, Telegram errors omit the URL |
+| Telemetry backends (Loki, Tempo, Prometheus) and whoever reads them | Collect secrets or reviewers' personal data | Off by default; route patterns instead of paths, scrubbed errors, no identities in spans or metrics, identities in logs only with `LOG_IDENTITIES`; metrics on a separate port (see «Telemetry») |
 
 Out of scope: a compromised server or cluster (it holds everything), a
 compromised owner machine while it is compromised (it holds a token; revoke
@@ -140,8 +141,8 @@ token ever being copied, pasted in a chat or typed on that computer:
   endpoint can kill your active codes; you then make a new one.
 - Malformed codes go through the same hash lookup and update as wrong ones.
 - The logs say when a code was made and by which device, and when a device was
-  enrolled, failed to enroll (with the client IP) or was revoked — never a code
-  or a token.
+  enrolled, failed to enroll (with the client IP in the text format; in JSON
+  only with `LOG_IDENTITIES`) or was revoked — never a code or a token.
 
 ## Requests
 
@@ -232,3 +233,35 @@ token ever being copied, pasted in a chat or typed on that computer:
 - Secrets come only from the environment (a SOPS-encrypted Secret in gitops) and
   are never logged; the startup line says which channels are on, not their
   values.
+
+## Telemetry
+
+Optional (README, «Telemetry (optional)»), and off unless configured: by
+default nothing leaves the process.
+
+- Logs, spans and metrics name requests by their **route pattern**
+  (`/a/:secret`, `/api/threads/:id`), never by the path, which can hold a link
+  secret. They never contain tokens, cookies, `Authorization` headers, comment
+  or reply text, PDF content, or (unless `LOG_IDENTITIES`) names, emails and IP
+  addresses. Spans and metrics never have identities at all.
+- Error messages and stacks are scrubbed before they are logged or attached to a
+  span: link paths, owner tokens, `Bearer`/`Basic` credentials, Telegram bot
+  tokens, credentials in URLs and email addresses are masked.
+- Database spans carry the SQL keyword and table, never the statement or its
+  parameters. Metric labels come from fixed sets (methods, route patterns,
+  status codes, roles, channels, SQL keywords), so they can't grow with user
+  input.
+- Metrics are served on their own port (`METRICS_PORT`), not on the public one
+  behind the tunnel; the chart's NetworkPolicy lets only the given namespace
+  scrape it, and lets the pods reach only the given OTLP collector.
+- An incoming `traceparent` is accepted only if strictly well-formed; a client
+  can choose its trace id and ask for sampling, which costs at most a bounded
+  export queue (2048 spans; the rest are dropped).
+- `OTEL_EXPORTER_OTLP_HEADERS` (collector credentials) is never logged; keep it
+  in the Secret.
+- `LOG_IDENTITIES=true` is an opt-in audit trail: the log lines of requests and
+  security events (links opened, invalid links, rejected tokens, rate limits,
+  logins, device enrollments, new comments) carry the person's id, name, email
+  and invitation, the owner's device, the client IP and the user agent. That is
+  personal data: reviewers should be told, and the log store's access and
+  retention restricted.

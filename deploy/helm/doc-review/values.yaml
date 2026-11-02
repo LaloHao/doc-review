@@ -117,6 +117,52 @@ networkPolicy:
   # More NetworkPolicy egress rules, as is.
   extraEgress: []
 
+# Telemetry, all optional and off by default (nothing is sent anywhere unless
+# configured). Spans and metrics never carry tokens, link secrets, raw paths,
+# names, emails, comment text or IPs: only route patterns, status codes, roles,
+# document slugs and numeric ids.
+telemetry:
+  # text (the plain messages) | json (one object per line, for Loki: Alloy or
+  # Promtail scraping pod stdout picks them up with no extra config).
+  logFormat: text
+  logLevel: info            # debug | info | warn | error
+  # Off by default. true adds who did what to the LOG lines (never to spans or
+  # metrics): a reviewer's person id, name, email and invitation, the owner's
+  # device, the client IP and the user agent. That is personal data of your
+  # reviewers: tell them (e.g. in the invitation), and keep access to the log
+  # store and its retention restricted. Tokens, secret links, cookies and
+  # comment text are never logged, even with this on.
+  logIdentities: false
+  otlp:
+    # OTLP/HTTP base URL; spans go to <endpoint>/v1/traces as JSON. "" = no traces.
+    endpoint: ""            # e.g. http://alloy.monitoring.svc.cluster.local:4318
+    serviceName: doc-review
+    resourceAttributes: ""  # e.g. deployment.environment=prod
+    # Share of traces kept (0-1).
+    samplerRatio: 1
+    # Auth headers (OTEL_EXPORTER_OTLP_HEADERS) are secret: put them in
+    # envSecretName, not here.
+    # With networkPolicy.enabled: the namespace (selector) and port the pods may
+    # reach for OTLP, e.g. {matchLabels: {kubernetes.io/metadata.name: monitoring}}.
+    # {} = any namespace.
+    networkPolicy:
+      namespaceSelector: {}
+      port: 4318
+
+# Prometheus metrics on a separate port (never the public one): GET /metrics.
+metrics:
+  enabled: false
+  port: 9464
+  # A prometheus-operator ServiceMonitor (monitoring.coreos.com/v1).
+  serviceMonitor:
+    enabled: false
+    labels: {}              # e.g. {release: kube-prometheus-stack}
+    interval: 30s
+  # With networkPolicy.enabled: who may scrape (ingress to the metrics port),
+  # e.g. {matchLabels: {kubernetes.io/metadata.name: monitoring}}. {} = any namespace.
+  networkPolicy:
+    namespaceSelector: {}
+
 resources:
   requests:
     cpu: 50m
