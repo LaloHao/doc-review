@@ -133,6 +133,9 @@ telemetry:
   # store and its retention restricted. Tokens, secret links, cookies and
   # comment text are never logged, even with this on.
   logIdentities: false
+  # How long the log store keeps the lines (days), said in the privacy notice;
+  # null = not said. It does not configure the log store.
+  retentionDays: null
   otlp:
     # OTLP/HTTP base URL; spans go to <endpoint>/v1/traces as JSON. "" = no traces.
     endpoint: ""            # e.g. http://alloy.monitoring.svc.cluster.local:4318
@@ -178,3 +181,11 @@ tolerations: []
 
 service:
   port: 8080
+
+# The privacy notice reviewers see (a «Privacy» link, a footer and /privacy):
+# by default only with telemetry.logIdentities, since the logs then keep their
+# personal data. notice: true/false forces it on/off. contact: who reviewers
+# write to about their data ("" = config.ownerEmail, or the owner by name).
+privacy:
+  notice: null
+  contact: ""

@@ -206,3 +206,6 @@ tr.archived td { color: var(--muted); }
 /* Devices: a one-time enrollment code */
 .enroll-code { font-family: ui-monospace, monospace; font-size: 2rem; letter-spacing: 0.15em; margin: 0.3rem 0; user-select: all; }
 .enroll-result pre { white-space: pre-wrap; word-break: break-all; background: var(--card); border: 1px solid var(--line); padding: 0.4rem 0.6rem; border-radius: 4px; }
+
+/* The privacy notice under reviewers' pages (not the viewer). */
+footer.privacy-note { max-width: 46rem; margin: 2rem auto 1rem; padding: 0 1rem; color: var(--muted); font-size: 0.85rem; }

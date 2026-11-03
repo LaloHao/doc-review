@@ -239,6 +239,8 @@ export function createAppContext(deps: AppDeps): App {
       title,
       who: c.session ? { kind: c.session.kind, name: whoName(c.session) } : null,
       csrf: c.session?.csrf,
+      // Reviewers (and visitors) see it; the owner wrote it.
+      privacy: config.privacy !== null && c.session?.kind !== "owner",
       ...extra,
     }),
     later: (fn) =>

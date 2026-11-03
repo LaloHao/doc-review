@@ -252,6 +252,9 @@ refreshes `docs/images/`.
 | `TZ` | `America/Mexico_City` | Time zone of digests and server-rendered dates |
 | `LOG_FORMAT` | `text` | `text` (plain messages, as always) or `json` (one object per line); see [Telemetry](#telemetry-optional) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `LOG_RETENTION_DAYS` | | how many days your log store keeps the lines, said in the privacy notice (it does not configure the store) |
+| `PRIVACY_NOTICE` | `LOG_IDENTITIES` | the privacy notice reviewers see (a «Privacy» link, a footer and `/privacy`); on by default only when identities are logged |
+| `PRIVACY_CONTACT` | `EMAIL_OWNER_TO` | who reviewers write to about their data (access, correction, deletion, objection) |
 | `LOG_IDENTITIES` | `false` | `true`: log lines also say who acted (person, email, client IP, user agent); personal data, see [Telemetry](#telemetry-optional) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/HTTP base URL; traces go to `…/v1/traces` (JSON). Unset = no traces |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | The full traces URL, used as is (instead of the above) |
@@ -298,6 +301,8 @@ refreshes `docs/images/`.
 | `podAnnotations`, `nodeSelector`, `tolerations` | `{}`, `{}`, `[]` | |
 | `service.port` | `8080` | |
 | `telemetry.logFormat`, `.logLevel`, `.logIdentities` | `text`, `info`, `false` | `LOG_FORMAT`, `LOG_LEVEL`, `LOG_IDENTITIES` (the migration Job gets the first two too) |
+| `telemetry.retentionDays` | `null` | `LOG_RETENTION_DAYS`: said in the privacy notice |
+| `privacy.notice`, `privacy.contact` | `null` (follows `logIdentities`), `""` | `PRIVACY_NOTICE`, `PRIVACY_CONTACT` |
 | `telemetry.otlp.endpoint`, `.serviceName`, `.resourceAttributes`, `.samplerRatio` | `""`, `doc-review`, `""`, `1` | `OTEL_EXPORTER_OTLP_ENDPOINT` (`""` = no traces), `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER_ARG`. Auth headers go in the Secret (`OTEL_EXPORTER_OTLP_HEADERS`) |
 | `telemetry.otlp.networkPolicy.namespaceSelector`, `.port` | `{}`, `4318` | With `networkPolicy.enabled` and an endpoint: egress to the collector (`{}` = any namespace) |
 | `metrics.enabled`, `.port` | `false`, `9464` | `METRICS_PORT`; a `metrics` container and Service port |
@@ -369,6 +374,16 @@ logged. **This records personal data of your reviewers** (names, emails, IP
 addresses): tell them (for example in the invitation or a privacy note), and keep
 access to the log store and its retention restricted. The startup line says
 whether identities are logged.
+
+With identities logged, reviewers see a privacy notice: a «Privacy» link in
+their navigation bar, a short line under their pages (not in the viewer) and
+`/privacy`, in their language: who is responsible (`OWNER_NAME`), what is
+recorded (name, email, IP, browser, activity), why (security only), how long
+(`LOG_RETENTION_DAYS`, if set), that comment text is not part of it, and whom
+to write to for access, correction, deletion or objection (`PRIVACY_CONTACT`,
+default `EMAIL_OWNER_TO`). Many data-protection laws (GDPR, Mexico's LFPDPPP)
+require such a notice; adjust it to yours. `PRIVACY_NOTICE=false` hides it,
+`true` shows it without identities.
 
 With a Grafana stack (Alloy, Loki, Tempo, Prometheus) — the values to set are in
 [docs/deploy.md](docs/deploy.md#telemetry-with-a-grafana-stack).

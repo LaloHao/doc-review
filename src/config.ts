@@ -56,6 +56,8 @@ export interface Config {
   timeZone: string;
   /** Logs, traces and metrics: all optional, off by default. */
   telemetry: TelemetryConfig;
+  /** The privacy notice reviewers see (link, footer and /privacy); null = none. */
+  privacy: PrivacyConfig | null;
 }
 
 export type LogFormat = "text" | "json";
@@ -71,6 +73,13 @@ export interface TracesConfig {
   resourceAttributes: Record<string, string>;
   /** Share of new traces kept (0-1); traces continued from a traceparent follow its sampled flag. */
   sampleRatio: number;
+}
+
+export interface PrivacyConfig {
+  /** Who reviewers write to about their data; "" = the owner, by name. */
+  contact: string;
+  /** How long the logs keep it (days); null = not said. */
+  retentionDays: number | null;
 }
 
 export interface TelemetryConfig {
@@ -165,6 +174,20 @@ export function loadTelemetryConfig(env: NodeJS.ProcessEnv = process.env): Telem
   return { logFormat, logLevel, logIdentities: bool(env, "LOG_IDENTITIES", false), traces, metricsPort };
 }
 
+/**
+ * The privacy notice: on with LOG_IDENTITIES (the logs then keep reviewers'
+ * personal data) unless PRIVACY_NOTICE=false; PRIVACY_NOTICE=true shows it
+ * anyway. PRIVACY_CONTACT (default EMAIL_OWNER_TO) and LOG_RETENTION_DAYS go
+ * in its text.
+ */
+export function loadPrivacyConfig(env: NodeJS.ProcessEnv, logIdentities: boolean, ownerEmail: string): PrivacyConfig | null {
+  if (!bool(env, "PRIVACY_NOTICE", logIdentities)) return null;
+  const days = str(env, "LOG_RETENTION_DAYS");
+  const retentionDays = days === "" ? null : int(env, "LOG_RETENTION_DAYS", 0);
+  if (retentionDays !== null && retentionDays < 1) throw new Error("LOG_RETENTION_DAYS must be a positive number of days");
+  return { contact: str(env, "PRIVACY_CONTACT", ownerEmail), retentionDays };
+}
+
 export function parseS3Url(url: string): { bucket: string; prefix: string } {
   const m = /^s3:\/\/([^/]+)\/?(.*)$/.exec(url);
   if (!m || !m[1]) throw new Error("S3_URL must look like s3://bucket[/prefix]");
@@ -241,6 +264,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (digestHour < 0 || digestHour > 23) throw new Error("DIGEST_HOUR must be 0-23");
   }
 
+  const telemetry = loadTelemetryConfig(env);
   return {
     host: str(env, "HOST", "0.0.0.0"),
     port: int(env, "PORT", 8080),
@@ -261,7 +285,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     notifyInstant: bool(env, "NOTIFY_INSTANT", true),
     digestHour,
     timeZone: str(env, "TZ", "America/Mexico_City") || "America/Mexico_City",
-    telemetry: loadTelemetryConfig(env),
+    telemetry,
+    privacy: loadPrivacyConfig(env, telemetry.logIdentities, str(env, "EMAIL_OWNER_TO")),
   };
 }
 

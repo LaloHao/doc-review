@@ -37,6 +37,23 @@ export function loginPage(tr: Tr, pre: string, error = ""): string {
   );
 }
 
+/** The privacy notice (only when the server keeps reviewers' personal data in its logs). */
+export function privacyPage(l: Layout, owner: string, contact: string, retentionDays: number | null): string {
+  const tr = l.tr;
+  return page(
+    { ...l, privacy: false },
+    `<main class="narrow">
+      <h1>${tr.e("privacy.title")}</h1>
+      <p>${tr.e("privacy.controller", { owner })}</p>
+      <p>${tr.e("privacy.what")}</p>
+      <p>${tr.e("privacy.purpose")}</p>
+      ${retentionDays !== null ? `<p>${tr.e("privacy.retention", { days: retentionDays })}</p>` : ""}
+      <p>${tr.e("privacy.comments")}</p>
+      <p>${contact ? tr.html("privacy.rights_contact", { contact: `<a href="mailto:${esc(contact)}">${esc(contact)}</a>` }) : tr.e("privacy.rights_owner", { owner })}</p>
+    </main>`,
+  );
+}
+
 /** A link opened in a browser that has a session of someone else. */
 export function switchIdentityPage(tr: Tr, current: string, next: string, secret: string, csrf: string): string {
   return page(

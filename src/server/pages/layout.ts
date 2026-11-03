@@ -16,6 +16,8 @@ export interface Layout {
   data?: Record<string, string | number>;
   /** The document the page is about (shown in the navigation bar). */
   doc?: { slug: string; title: string } | null;
+  /** Show the privacy notice's link (and, outside the viewer, its footer). */
+  privacy?: boolean;
 }
 
 /** JSON inside <script type="application/json">: "<" can't close the element. */
@@ -35,6 +37,7 @@ export function page(l: Layout, body: string): string {
         <span class="spacer"></span>
         ${l.who.kind === "owner" && l.doc ? `<a href="/d/${esc(l.doc.slug)}/manage" class="nav-link">${tr.e("nav.manage")}</a>` : ""}
         ${l.who.kind === "reviewer" ? `<a href="/notifications" class="nav-link">${tr.e("nav.notifications")}</a>` : ""}
+        ${l.privacy ? `<a href="/privacy" class="nav-link">${tr.e("privacy.nav")}</a>` : ""}
         ${l.who.kind === "owner" ? `<a href="/devices" class="nav-link">${tr.e("nav.devices")}</a>` : ""}
         <span class="who">${esc(l.who.name)}${l.who.kind === "owner" ? ` · ${tr.e("nav.owner")}` : ""}</span>
         <form method="post" action="/logout" class="inline">
@@ -61,6 +64,7 @@ ${scripts.map((s) => `<script type="module" src="${esc(s)}"></script>`).join("\n
 <body class="${esc(l.bodyClass ?? "")}"${data}>
 ${nav}
 ${body}
+${l.privacy && !(l.bodyClass ?? "").includes("viewer") ? `<footer class="privacy-note"><p>${tr.e("privacy.footer")} <a href="/privacy">${tr.e("privacy.read")}</a></p></footer>` : ""}
 </body>
 </html>`;
 }
