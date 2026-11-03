@@ -7,7 +7,7 @@ import type { App, Ctx } from "../context.js";
 import { docTr } from "../context.js";
 import { html, HttpError, json, readJson, redirect } from "../http.js";
 import { documentManagePage, ownerDashboard } from "../pages/owner.js";
-import { landingPage, noVersionsPage, reviewerHome } from "../pages/reviewer.js";
+import { landingPage, noVersionsPage, privacyPage, reviewerHome } from "../pages/reviewer.js";
 import type { Router } from "../router.js";
 import { language, line, slug, visibility } from "../validate.js";
 
@@ -50,6 +50,14 @@ export function documentRoutes(r: Router<Ctx>, app: App): void {
       })),
     );
   };
+
+  // The privacy notice: only when the server keeps reviewers' personal data (LOG_IDENTITIES).
+  r.get("/privacy", async (c) => {
+    const privacy = app.config.privacy;
+    if (!privacy) throw new HttpError(404, "err.not_found");
+    const tr = translator(c.lang);
+    html(c.res, 200, privacyPage(app.layout(c, tr, tr("privacy.title")), app.config.ownerName, privacy.contact, privacy.retentionDays));
+  });
 
   r.get("/", async (c) => {
     const tr = translator(c.lang);

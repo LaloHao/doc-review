@@ -27,6 +27,9 @@ data:
   LOG_FORMAT: {{ .logFormat | quote }}
   LOG_LEVEL: {{ .logLevel | quote }}
   LOG_IDENTITIES: {{ .logIdentities | toString | quote }}
+  {{- if .retentionDays }}
+  LOG_RETENTION_DAYS: {{ .retentionDays | toString | quote }}
+  {{- end }}
   {{- if .otlp.endpoint }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .otlp.endpoint | quote }}
   OTEL_SERVICE_NAME: {{ .otlp.serviceName | quote }}
@@ -35,6 +38,12 @@ data:
   OTEL_RESOURCE_ATTRIBUTES: {{ . | quote }}
   {{- end }}
   {{- end }}
+  {{- end }}
+  {{- if ne .Values.privacy.notice nil }}
+  PRIVACY_NOTICE: {{ .Values.privacy.notice | toString | quote }}
+  {{- end }}
+  {{- with .Values.privacy.contact }}
+  PRIVACY_CONTACT: {{ . | quote }}
   {{- end }}
   {{- if .Values.metrics.enabled }}
   METRICS_PORT: {{ .Values.metrics.port | quote }}
